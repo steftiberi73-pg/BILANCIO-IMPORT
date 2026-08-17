@@ -799,7 +799,6 @@
     <button id="exportByCodeCsvBtn">Esporta CSV</button>
     <button id="exportByCodeXlsBtn">Esporta Excel</button>
     <button id="exportByCodePdfBtn">Esporta PDF</button>
-    <button id="exportSaldiBudgetBtn" title="Esporta i saldi mensili di questa azienda in un file da importare nel Budget Previsionale, abbinando i conti con lo stesso codice">🔗 Esporta saldi per Budget</button>
     <label class="hide-months-toggle">
       <input type="checkbox" id="hideMonthsToggle">
       Mostra solo il totale
@@ -1069,7 +1068,7 @@
 
 <div id="tabDipendenti" class="tab-content">
 
-  <div class="panel-hint" style="margin-bottom:12px;">Bilancio per dipendente, su tutte le commesse dell'azienda selezionata: Ricavi monte ore generati dal dipendente, meno i Costi inseriti per lo stesso nome nella scheda "Fornitori".</div>
+  <div class="panel-hint" style="margin-bottom:12px;">Bilancio per dipendente, su tutte le commesse dell'azienda selezionata: Ricavi monte ore generati dal dipendente, meno i Costi inseriti per lo stesso nome nella scheda "Fornitori" e i Costi manuali inseriti qui sotto.</div>
 
   <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
     <h2 style="font-size:15px; margin:0;">Bilancio per dipendente</h2>
@@ -1079,6 +1078,13 @@
       <span>–</span>
       <select id="dipendentiToField"></select>
     </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-hint" style="margin:0 0 8px;">Costi manuali per dipendente: si sommano mese per mese e vengono sottratti dal Margine nella tabella qui sotto, oltre ai Costi da "Fornitori".</div>
+    <input type="text" id="searchCostiManuali" class="search-input" placeholder="Cerca per dipendente...">
+    <div id="costiManualiList"></div>
+    <button class="panel-add-btn" id="addCostoManualeBtn">+ Aggiungi costo manuale</button>
   </div>
 
   <div class="toolbar">
@@ -1096,6 +1102,7 @@
         <th>Dipendente</th>
         <th>Ricavi (monte ore)</th>
         <th>Costi</th>
+        <th>Costi manuali</th>
         <th class="total-col">Margine</th>
       </tr>
     </thead>
@@ -1175,6 +1182,7 @@ function emptyCompany(name){
     ripartitriceCommessaId: null,
     fornitori: [],
     monteOre: [],
+    costiManualiDipendenti: [],
     year: '2026'
   };
 }
@@ -1236,6 +1244,7 @@ function normalizeCompany(c, globalChart){
   if(c.ripartitriceCommessaId === undefined) c.ripartitriceCommessaId = null;
   if(!Array.isArray(c.fornitori)) c.fornitori = [];
   if(!Array.isArray(c.monteOre)) c.monteOre = [];
+  if(!Array.isArray(c.costiManualiDipendenti)) c.costiManualiDipendenti = [];
   if(!c.year) c.year = '2026';
   if(!c.id) c.id = makeId();
   if(!c.name) c.name = 'Azienda';
@@ -1389,7 +1398,7 @@ function getCurrentCompany(){
 let data = getCurrentCompany();
 
 // Stato ricerca per le schede Piano dei conti / Spese raggruppate / Previsionale / Spostamenti / Fornitori
-const searchState = { piano:'', spese:'', previsionale:'', spostamenti:'', fornitori:'', monteOre:'' };
+const searchState = { piano:'', spese:'', previsionale:'', spostamenti:'', fornitori:'', monteOre:'', costiManuali:'' };
 
 // Stato di espansione dei sezionali nel Piano dei conti: di default chiusi, mostrando solo le 4 intestazioni.
 const coaCollapsed = { ricavi:true, costi_dir:true, costi_ind:true, oneri:true };
@@ -3839,17 +3848,28 @@ function computeDipendentiBalances(){
     costiByName[name] = (costiByName[name] || 0) + (parseFloat(f.importo) || 0);
   });
 
-  const names = Array.from(new Set([...Object.keys(ricaviByName), ...Object.keys(costiByName)]))
+  const costiManualiByName = {};
+  data.costiManualiDipendenti.forEach(cm=>{
+    const m = Math.min(Math.max(parseInt(cm.mese)||0, 0), MONTHS-1);
+    if(!inPeriod(m)) return;
+    const name = (cm.dipendente || '').trim() || '(senza nome)';
+    costiManualiByName[name] = (costiManualiByName[name] || 0) + (parseFloat(cm.importo) || 0);
+  });
+
+  const names = Array.from(new Set([...Object.keys(ricaviByName), ...Object.keys(costiByName), ...Object.keys(costiManualiByName)]))
     .sort((a,b)=> a.localeCompare(b, 'it'));
 
   return names.map(name=>{
     const ricavi = ricaviByName[name] || 0;
     const costi = costiByName[name] || 0;
-    return { name, ricavi, costi, margine: ricavi - costi };
+    const costiManuali = costiManualiByName[name] || 0;
+    return { name, ricavi, costi, costiManuali, margine: ricavi - costi - costiManuali };
   });
 }
 
 function renderDipendenti(){
+  renderCostiManualiList();
+
   const tbody = document.getElementById('dipendentiTableBody');
   if(!tbody) return;
   tbody.innerHTML = '';
@@ -3862,18 +3882,19 @@ function renderDipendenti(){
   if(rows.length === 0){
     const tr = document.createElement('tr');
     const td = document.createElement('td');
-    td.colSpan = 4;
+    td.colSpan = 5;
     td.className = 'no-accounts-hint';
-    td.textContent = 'Nessun dato: inserisci voci in "Ricavi monte ore" e/o "Fornitori".';
+    td.textContent = 'Nessun dato: inserisci voci in "Ricavi monte ore", "Fornitori" e/o Costi manuali.';
     tr.appendChild(td);
     tbody.appendChild(tr);
     return;
   }
 
-  const grand = { ricavi:0, costi:0, margine:0 };
+  const grand = { ricavi:0, costi:0, costiManuali:0, margine:0 };
   rows.forEach(r=>{
     grand.ricavi += r.ricavi;
     grand.costi += r.costi;
+    grand.costiManuali += r.costiManuali;
     grand.margine += r.margine;
 
     const tr = document.createElement('tr');
@@ -3881,11 +3902,11 @@ function renderDipendenti(){
     const tdName = document.createElement('td');
     tdName.textContent = r.name;
     tr.appendChild(tdName);
-    [r.ricavi, r.costi, r.margine].forEach((v,i)=>{
+    [r.ricavi, r.costi, r.costiManuali, r.margine].forEach((v,i)=>{
       const td = document.createElement('td');
       td.textContent = fmt(v);
       if(v<0) td.classList.add('neg');
-      if(i === 2) td.className += ' total-col';
+      if(i === 3) td.className += ' total-col';
       tr.appendChild(td);
     });
     tbody.appendChild(tr);
@@ -3896,14 +3917,144 @@ function renderDipendenti(){
   const tdLabel = document.createElement('td');
   tdLabel.textContent = 'Totale complessivo';
   trTot.appendChild(tdLabel);
-  [grand.ricavi, grand.costi, grand.margine].forEach((v,i)=>{
+  [grand.ricavi, grand.costi, grand.costiManuali, grand.margine].forEach((v,i)=>{
     const td = document.createElement('td');
     td.textContent = fmt(v);
     if(v<0) td.classList.add('neg');
-    if(i === 2) td.className += ' total-col';
+    if(i === 3) td.className += ' total-col';
     trTot.appendChild(td);
   });
   tbody.appendChild(trTot);
+}
+
+// ---- Costi manuali per dipendente (indipendenti da conto/commessa): voci puntuali (dipendente,
+// mese, importo) che si sommano ai Costi da Fornitori e si sottraggono dal Margine. ----
+
+function renderCostiManualiList(){
+  const list = document.getElementById('costiManualiList');
+  if(!list) return;
+  list.innerHTML = '';
+
+  const q = searchState.costiManuali;
+  const matchCm = (cm)=> matchesSearch([cm.dipendente, MONTH_NAMES[cm.mese]], q);
+  const visibleCount = data.costiManualiDipendenti.filter(matchCm).length;
+
+  if(data.costiManualiDipendenti.length === 0){
+    const empty = document.createElement('div');
+    empty.className = 'panel-empty';
+    empty.textContent = 'Nessun costo manuale inserito. Usa il pulsante qui sotto per aggiungerne uno.';
+    list.appendChild(empty);
+  } else if(visibleCount === 0){
+    const empty = document.createElement('div');
+    empty.className = 'panel-empty';
+    empty.textContent = 'Nessuna voce trovata per la ricerca.';
+    list.appendChild(empty);
+  }
+
+  data.costiManualiDipendenti.forEach((cm, idx)=>{
+    if(!matchCm(cm)) return;
+    const row = document.createElement('div');
+    row.className = 'riparti-item';
+
+    // dipendente
+    const fieldDip = document.createElement('div');
+    fieldDip.className = 'field';
+    const labelDip = document.createElement('span');
+    labelDip.className = 'field-label';
+    labelDip.textContent = 'Dipendente';
+    const inputDip = document.createElement('input');
+    inputDip.type = 'text';
+    inputDip.placeholder = 'Nome dipendente';
+    inputDip.value = cm.dipendente || '';
+    inputDip.style.flex = 'none';
+    inputDip.style.width = '170px';
+    inputDip.addEventListener('input', (e)=>{
+      data.costiManualiDipendenti[idx].dipendente = e.target.value;
+      saveData();
+    });
+    inputDip.addEventListener('change', ()=>{ render(); });
+    fieldDip.appendChild(labelDip);
+    fieldDip.appendChild(inputDip);
+    row.appendChild(fieldDip);
+
+    // mese
+    const fieldMese = document.createElement('div');
+    fieldMese.className = 'field';
+    const labelMese = document.createElement('span');
+    labelMese.className = 'field-label';
+    labelMese.textContent = 'Mese';
+    const selectMese = document.createElement('select');
+    MONTH_NAMES.forEach((mName, mi)=>{
+      const o = document.createElement('option');
+      o.value = mi;
+      o.textContent = mName;
+      if(cm.mese === mi) o.selected = true;
+      selectMese.appendChild(o);
+    });
+    selectMese.addEventListener('change', (e)=>{
+      data.costiManualiDipendenti[idx].mese = parseInt(e.target.value);
+      saveData();
+      render();
+    });
+    fieldMese.appendChild(labelMese);
+    fieldMese.appendChild(selectMese);
+    row.appendChild(fieldMese);
+
+    // importo
+    const fieldAmount = document.createElement('div');
+    fieldAmount.className = 'field';
+    const labelAmount = document.createElement('span');
+    labelAmount.className = 'field-label';
+    labelAmount.textContent = 'Importo';
+    const inputAmount = document.createElement('input');
+    inputAmount.type = 'text';
+    inputAmount.inputMode = 'decimal';
+    inputAmount.style.flex = 'none';
+    inputAmount.style.width = '110px';
+    inputAmount.value = fmt(cm.importo);
+    inputAmount.addEventListener('focus', (e)=>{
+      e.target.value = data.costiManualiDipendenti[idx].importo;
+      e.target.select();
+    });
+    inputAmount.addEventListener('input', (e)=>{
+      data.costiManualiDipendenti[idx].importo = parseFloat(e.target.value.replace(',','.')) || 0;
+      saveData();
+    });
+    inputAmount.addEventListener('blur', (e)=>{
+      e.target.value = fmt(data.costiManualiDipendenti[idx].importo);
+    });
+    inputAmount.addEventListener('change', ()=>{ render(); });
+    fieldAmount.appendChild(labelAmount);
+    fieldAmount.appendChild(inputAmount);
+    row.appendChild(fieldAmount);
+
+    // duplica
+    const dupBtn = document.createElement('button');
+    dupBtn.className = 'dup-riparti';
+    dupBtn.title = 'Duplica questa voce';
+    dupBtn.textContent = '⧉';
+    dupBtn.addEventListener('click', ()=>{
+      const copy = Object.assign({}, data.costiManualiDipendenti[idx], { id: makeId() });
+      data.costiManualiDipendenti.splice(idx+1, 0, copy);
+      saveData();
+      render();
+    });
+    row.appendChild(dupBtn);
+
+    // elimina
+    const delBtn = document.createElement('button');
+    delBtn.className = 'del-riparti';
+    delBtn.title = 'Elimina';
+    delBtn.textContent = '✕';
+    delBtn.addEventListener('click', ()=>{
+      data.costiManualiDipendenti.splice(idx,1);
+      saveData();
+      render();
+    });
+    row.appendChild(delBtn);
+
+    list.appendChild(row);
+  });
 }
 
 // ---- Spese raggruppate: voci puntuali (mese, conto, importo) + saldo mensile per conto ----
@@ -4776,6 +4927,7 @@ document.getElementById('resetBtn').addEventListener('click', ()=>{
     data.ripartitriceCommessaId = null;
     data.fornitori = [];
     data.monteOre = [];
+    data.costiManualiDipendenti = [];
     saveData();
     render();
   }
@@ -5202,48 +5354,6 @@ document.getElementById('exportByCodeXlsBtn').addEventListener('click', ()=>{
   const sheetName = 'CE sintetico';
   XLSX.utils.book_append_sheet(wb, ws, sheetName);
   XLSX.writeFile(wb, exportByCodeFileBaseName() + '.xlsx');
-});
-
-// ---- Esporta saldi per il Budget Previsionale: un JSON con il saldo mensile di ogni
-// conto (identificato dal suo codice) dell'azienda corrente, da importare nell'app
-// "Budget Previsionale" per riportare i consuntivi sui conti con lo stesso codice. ----
-function buildSaldiPerBudgetPayload(){
-  const byCode = computeByCode();
-  const saldi = {};
-  const senzaCodice = [];
-  SECTION_IDS.forEach(sectionId=>{
-    accountsByCategory(sectionId).forEach(acc=>{
-      const monthly = byCode.perAccount[acc.id];
-      if(!monthly) return; // conto non usato in questa azienda
-      const code = (acc.code || '').trim();
-      if(!code){ senzaCodice.push(acc.name); return; }
-      saldi[code] = monthly.map(v=> Math.round((parseFloat(v)||0) * 100) / 100);
-    });
-  });
-  return {
-    tipo: 'saldi-conto-economico',
-    versione: 1,
-    azienda: data.name || 'Azienda',
-    anno: data.year || '',
-    esportatoIl: new Date().toISOString(),
-    saldi,
-    contiSenzaCodice: senzaCodice
-  };
-}
-
-document.getElementById('exportSaldiBudgetBtn').addEventListener('click', ()=>{
-  const payload = buildSaldiPerBudgetPayload();
-  if(payload.contiSenzaCodice.length){
-    alert('Attenzione: i seguenti conti non hanno un codice assegnato e non saranno inclusi nel file (assegna un codice nel Piano dei Conti per poterli riportare sul Budget):\n- ' + payload.contiSenzaCodice.join('\n- '));
-  }
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type:'application/json;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  const safeName = (data.name || 'azienda').replace(/[^a-z0-9]+/gi, '_');
-  a.download = 'saldi_per_budget_' + safeName + '_' + (data.year || '') + '.json';
-  a.click();
-  URL.revokeObjectURL(url);
 });
 
 document.getElementById('hideMonthsToggle').addEventListener('change', (e)=>{
@@ -5789,9 +5899,9 @@ document.getElementById('exportMonteOreRiepilogoPdfBtn').addEventListener('click
 
 function buildDipendentiReportRows(){
   const rows = [];
-  rows.push(['Dipendente', 'Ricavi (monte ore)', 'Costi', 'Margine']);
+  rows.push(['Dipendente', 'Ricavi (monte ore)', 'Costi', 'Costi manuali', 'Margine']);
   computeDipendentiBalances().forEach(r=>{
-    rows.push([r.name, r.ricavi, r.costi, r.margine]);
+    rows.push([r.name, r.ricavi, r.costi, r.costiManuali, r.margine]);
   });
   return rows;
 }
@@ -5827,7 +5937,7 @@ document.getElementById('exportDipendentiXlsBtn').addEventListener('click', ()=>
   }
   const rows = buildDipendentiReportRows();
   const ws = XLSX.utils.aoa_to_sheet(rows);
-  ws['!cols'] = [{ wch: 24 }, { wch: 16 }, { wch: 16 }, { wch: 16 }];
+  ws['!cols'] = [{ wch: 24 }, { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 16 }];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Bilancio dipendenti');
   XLSX.writeFile(wb, exportDipendentiFileBaseName() + '.xlsx');
@@ -5838,6 +5948,17 @@ document.getElementById('exportDipendentiPdfBtn').addEventListener('click', ()=>
   document.title = exportDipendentiFileBaseName();
   window.print();
   document.title = prevTitle;
+});
+
+document.getElementById('addCostoManualeBtn').addEventListener('click', ()=>{
+  data.costiManualiDipendenti.push({ id: makeId(), dipendente:'', mese:0, importo:0 });
+  saveData();
+  render();
+});
+
+document.getElementById('searchCostiManuali').addEventListener('input', (e)=>{
+  searchState.costiManuali = e.target.value;
+  renderCostiManualiList();
 });
 
 document.getElementById('exportPdfBtn').addEventListener('click', ()=>{
@@ -6049,3 +6170,4 @@ render();
 
 </body>
 </html>
+aggiornamento app
