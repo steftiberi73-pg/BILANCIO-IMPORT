@@ -536,6 +536,16 @@
     padding:4px 0 8px;
   }
 
+  .spese-account-header{
+    font-size:12.5px;
+    font-weight:700;
+    color:var(--muted);
+    padding:6px 0 4px;
+    margin-top:8px;
+    border-top:1px solid #eef0f3;
+  }
+  .spese-account-header:first-child{ margin-top:0; border-top:none; }
+
   .add-account-select{
     padding:6px 8px;
     border:1px dashed var(--border);
@@ -4078,15 +4088,54 @@ function renderSpeseList(){
     empty.className = 'panel-empty';
     empty.textContent = 'Nessuna voce di spesa inserita. Usa il pulsante qui sotto per aggiungerne una.';
     list.appendChild(empty);
+    return;
   } else if(visibleCount === 0){
     const empty = document.createElement('div');
     empty.className = 'panel-empty';
     empty.textContent = 'Nessuna voce trovata per la ricerca.';
     list.appendChild(empty);
+    return;
   }
 
+  // Raggruppa le voci per conto (nell'ordine sezione/piano dei conti), così i movimenti dello
+  // stesso conto compaiono vicini invece che in ordine di inserimento.
+  const usedIds = new Set();
+  SECTIONS.filter(s=>s.kind==='accounts').forEach(sec=>{
+    accountsByCategory(sec.id).forEach(acc=>{
+      const entries = [];
+      data.speseRaggruppate.forEach((sp, idx)=>{
+        if(sp.accountId !== acc.id) return;
+        if(!matchSp(sp)) return;
+        entries.push({ sp, idx });
+      });
+      if(entries.length === 0) return;
+      usedIds.add(acc.id);
+      const header = document.createElement('div');
+      header.className = 'spese-account-header';
+      header.textContent = acc.name;
+      list.appendChild(header);
+      entries.forEach(({sp, idx})=> list.appendChild(buildSpesaRow(sp, idx)));
+    });
+  });
+
+  // voci orfane, il cui conto non esiste più nel piano dei conti attuale
+  const orphan = [];
   data.speseRaggruppate.forEach((sp, idx)=>{
+    if(usedIds.has(sp.accountId)) return;
+    if(getAccountById(sp.accountId)) return; // conto esistente ma di una categoria non tra le sezioni note (non dovrebbe succedere)
     if(!matchSp(sp)) return;
+    orphan.push({ sp, idx });
+  });
+  if(orphan.length){
+    const header = document.createElement('div');
+    header.className = 'spese-account-header';
+    header.textContent = '(conto eliminato)';
+    list.appendChild(header);
+    orphan.forEach(({sp, idx})=> list.appendChild(buildSpesaRow(sp, idx)));
+  }
+}
+
+function buildSpesaRow(sp, idx){
     const row = document.createElement('div');
     row.className = 'riparti-item';
 
@@ -4219,8 +4268,7 @@ function renderSpeseList(){
     });
     row.appendChild(delBtn);
 
-    list.appendChild(row);
-  });
+    return row;
 }
 
 function renderSpesePivot(){
