@@ -543,8 +543,19 @@
     padding:6px 0 4px;
     margin-top:8px;
     border-top:1px solid #eef0f3;
+    cursor:pointer;
+    display:flex;
+    align-items:center;
+    gap:6px;
+    user-select:none;
   }
   .spese-account-header:first-child{ margin-top:0; border-top:none; }
+  .spese-account-header .spese-toggle-arrow{
+    display:inline-block;
+    transition:transform 0.15s ease;
+    font-size:10px;
+  }
+  .spese-account-header.collapsed .spese-toggle-arrow{ transform:rotate(-90deg); }
 
   .add-account-select{
     padding:6px 8px;
@@ -1412,6 +1423,13 @@ const searchState = { piano:'', spese:'', previsionale:'', spostamenti:'', forni
 
 // Stato di espansione dei sezionali nel Piano dei conti: di default chiusi, mostrando solo le 4 intestazioni.
 const coaCollapsed = { ricavi:true, costi_dir:true, costi_ind:true, oneri:true };
+
+// Stato di espansione dei gruppi per conto nella lista "Spese raggruppate": di default tutti
+// chiusi, si aprono singolarmente al click sull'intestazione (o tutti durante una ricerca attiva).
+const speseAccountCollapsed = {};
+function isSpesaAccountCollapsed(key){
+  return speseAccountCollapsed[key] !== false;
+}
 
 function matchesSearch(fields, query){
   if(!query) return true;
@@ -4098,7 +4116,8 @@ function renderSpeseList(){
   }
 
   // Raggruppa le voci per conto (nell'ordine sezione/piano dei conti), così i movimenti dello
-  // stesso conto compaiono vicini invece che in ordine di inserimento.
+  // stesso conto compaiono vicini invece che in ordine di inserimento. Ogni gruppo è chiuso di
+  // default e si apre al click sulla sua intestazione (o automaticamente durante una ricerca).
   const usedIds = new Set();
   SECTIONS.filter(s=>s.kind==='accounts').forEach(sec=>{
     accountsByCategory(sec.id).forEach(acc=>{
@@ -4110,11 +4129,10 @@ function renderSpeseList(){
       });
       if(entries.length === 0) return;
       usedIds.add(acc.id);
-      const header = document.createElement('div');
-      header.className = 'spese-account-header';
-      header.textContent = acc.name;
-      list.appendChild(header);
-      entries.forEach(({sp, idx})=> list.appendChild(buildSpesaRow(sp, idx)));
+      list.appendChild(buildSpesaAccountHeader(acc.id, acc.name, entries.length, q));
+      if(q || !isSpesaAccountCollapsed(acc.id)){
+        entries.forEach(({sp, idx})=> list.appendChild(buildSpesaRow(sp, idx)));
+      }
     });
   });
 
@@ -4127,12 +4145,29 @@ function renderSpeseList(){
     orphan.push({ sp, idx });
   });
   if(orphan.length){
-    const header = document.createElement('div');
-    header.className = 'spese-account-header';
-    header.textContent = '(conto eliminato)';
-    list.appendChild(header);
-    orphan.forEach(({sp, idx})=> list.appendChild(buildSpesaRow(sp, idx)));
+    list.appendChild(buildSpesaAccountHeader('__orphan__', '(conto eliminato)', orphan.length, q));
+    if(q || !isSpesaAccountCollapsed('__orphan__')){
+      orphan.forEach(({sp, idx})=> list.appendChild(buildSpesaRow(sp, idx)));
+    }
   }
+}
+
+function buildSpesaAccountHeader(key, label, count, activeQuery){
+  const isCollapsed = activeQuery ? false : isSpesaAccountCollapsed(key);
+  const header = document.createElement('div');
+  header.className = 'spese-account-header' + (isCollapsed ? ' collapsed' : '');
+  const arrow = document.createElement('span');
+  arrow.className = 'spese-toggle-arrow';
+  arrow.textContent = '▾';
+  header.appendChild(arrow);
+  const text = document.createElement('span');
+  text.textContent = label + ' (' + count + ')';
+  header.appendChild(text);
+  header.addEventListener('click', ()=>{
+    speseAccountCollapsed[key] = !isSpesaAccountCollapsed(key);
+    renderSpeseList();
+  });
+  return header;
 }
 
 function buildSpesaRow(sp, idx){
