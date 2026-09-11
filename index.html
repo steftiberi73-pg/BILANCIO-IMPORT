@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!<!DOCTYPE html>
 <html lang="it">
 <head>
 <meta charset="UTF-8">
@@ -556,6 +556,17 @@
     font-size:10px;
   }
   .account-group-header.collapsed .account-group-toggle-arrow{ transform:rotate(-90deg); }
+
+  .account-group-header.sub{
+    margin-left:16px;
+    margin-top:4px;
+    padding:3px 0 3px;
+    border-top:none;
+    font-size:12px;
+    font-weight:600;
+    color:var(--muted);
+    opacity:0.85;
+  }
 
   .add-account-select{
     padding:6px 8px;
@@ -1430,6 +1441,10 @@ const coaCollapsed = { ricavi:true, costi_dir:true, costi_ind:true, oneri:true }
 // di default tutti chiusi, si aprono singolarmente al click sull'intestazione (o tutti durante
 // una ricerca attiva). Ogni scheda ha il proprio oggetto di stato, indipendente dalle altre.
 const speseAccountCollapsed = {};
+// Stato di espansione dei sotto-gruppi per "Voce" dentro ciascun conto, in "Spese raggruppate".
+// Chiave: accountId + '::' + voce (normalizzata). Stesso comportamento: chiuso di default,
+// si apre al click o durante una ricerca attiva.
+const speseVoceCollapsed = {};
 const spostamentiAccountCollapsed = {};
 
 function matchesSearch(fields, query){
@@ -4132,7 +4147,7 @@ function renderSpeseList(){
       usedIds.add(acc.id);
       list.appendChild(buildAccountGroupHeader(speseAccountCollapsed, acc.id, acc.name, entries.length, q, renderSpeseList));
       if(q || speseAccountCollapsed[acc.id] === false){
-        entries.forEach(({sp, idx})=> list.appendChild(buildSpesaRow(sp, idx)));
+        appendSpeseEntriesByVoce(list, acc.id, entries, q);
       }
     });
   });
@@ -4148,18 +4163,51 @@ function renderSpeseList(){
   if(orphan.length){
     list.appendChild(buildAccountGroupHeader(speseAccountCollapsed, '__orphan__', '(conto eliminato)', orphan.length, q, renderSpeseList));
     if(q || speseAccountCollapsed['__orphan__'] === false){
-      orphan.forEach(({sp, idx})=> list.appendChild(buildSpesaRow(sp, idx)));
+      appendSpeseEntriesByVoce(list, '__orphan__', orphan, q);
     }
   }
 }
 
-// Intestazione generica, apri/chiudi, per raggruppare per conto le liste di voci puntuali
-// (Spese raggruppate, Spostamenti, ...). collapsedState è l'oggetto di stato del chiamante
-// (una voce per conto/chiave), onToggle è la funzione di render da richiamare dopo il click.
-function buildAccountGroupHeader(collapsedState, key, label, count, activeQuery, onToggle){
+// Dentro un gruppo per conto già espanso, raggruppa ulteriormente le voci di spesa in base al
+// testo del campo "Voce" (sotto-raggruppamento), con la stessa intestazione apri/chiudi, chiusa
+// di default e aperta automaticamente durante una ricerca attiva. Voci senza testo finiscono
+// tutte insieme in un gruppo "(senza voce)", mostrato per ultimo.
+function appendSpeseEntriesByVoce(list, accountKey, entries, activeQuery){
+  const groups = [];
+  const groupByKey = {};
+  entries.forEach(({sp, idx})=>{
+    const raw = (sp.voce || '').trim();
+    const key = raw ? raw.toLowerCase() : '__no_voce__';
+    let g = groupByKey[key];
+    if(!g){
+      g = { key, label: raw || '(senza voce)', items: [] };
+      groupByKey[key] = g;
+      groups.push(g);
+    }
+    g.items.push({ sp, idx });
+  });
+  groups.sort((a,b)=>{
+    if(a.key === '__no_voce__') return 1;
+    if(b.key === '__no_voce__') return -1;
+    return a.label.localeCompare(b.label, 'it');
+  });
+  groups.forEach(g=>{
+    const subKey = accountKey + '::' + g.key;
+    list.appendChild(buildAccountGroupHeader(speseVoceCollapsed, subKey, g.label, g.items.length, activeQuery, renderSpeseList, true));
+    if(activeQuery || speseVoceCollapsed[subKey] === false){
+      g.items.forEach(({sp, idx})=> list.appendChild(buildSpesaRow(sp, idx)));
+    }
+  });
+}
+
+// Intestazione generica, apri/chiudi, per raggruppare per conto (o per sotto-gruppo, es. Voce)
+// le liste di voci puntuali (Spese raggruppate, Spostamenti, ...). collapsedState è l'oggetto
+// di stato del chiamante (una voce per conto/chiave), onToggle è la funzione di render da
+// richiamare dopo il click. isSub=true la rende un'intestazione annidata (indentata, più piccola).
+function buildAccountGroupHeader(collapsedState, key, label, count, activeQuery, onToggle, isSub){
   const isCollapsed = activeQuery ? false : (collapsedState[key] !== false);
   const header = document.createElement('div');
-  header.className = 'account-group-header' + (isCollapsed ? ' collapsed' : '');
+  header.className = 'account-group-header' + (isSub ? ' sub' : '') + (isCollapsed ? ' collapsed' : '');
   const arrow = document.createElement('span');
   arrow.className = 'account-group-toggle-arrow';
   arrow.textContent = '▾';
@@ -6293,4 +6341,4 @@ render();
 
 </body>
 </html>
-aggiornamento app
+aggiornamento app1109
