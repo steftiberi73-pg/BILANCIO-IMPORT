@@ -620,11 +620,16 @@
       margin-top:2px;
     }
     body{ padding:0; background:#fff; }
-    .table-wrap{ border:none; box-shadow:none; }
-    .main-table-wrap{ max-height:none; overflow-y:visible; }
+    /* overflow-x:auto (o il main-table-wrap con overflow-y:auto) trasforma il contenitore in un
+       riquadro con scroll a dimensione fissa: in stampa questo TAGLIA le righe che non ci stanno,
+       invece di farle proseguire sulla pagina successiva. In stampa serve overflow:visible così
+       la tabella può paginarsi normalmente e non perde le righe finali (es. i totali). */
+    .table-wrap{ border:none; box-shadow:none; overflow:visible !important; max-height:none !important; }
     table{ min-width:0; font-size:10.5px; }
+    thead{ display:table-header-group; }
     thead th{ position:static; }
     thead th:first-child, tbody td:first-child{ position:static; }
+    tr{ page-break-inside:avoid; }
     tr.account-row input.val, tr.account-row input.acc-name{
       border:none !important;
       background:transparent !important;
@@ -6364,4 +6369,5 @@ render();
 
 </body>
 </html>
+aggiornamento stampe
 
