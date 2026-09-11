@@ -167,6 +167,13 @@
     overflow-x:auto;
     box-shadow:0 1px 2px rgba(0,0,0,0.04);
   }
+  /* Il Conto Economico può avere molte righe: teniamo la tabella dentro un riquadro con
+     scroll verticale proprio, così l'intestazione con i mesi (position:sticky) resta visibile
+     mentre si scorre in basso, invece di sparire scorrendo la pagina intera. */
+  .main-table-wrap{
+    max-height:70vh;
+    overflow-y:auto;
+  }
   table{
     border-collapse:collapse;
     width:100%;
@@ -614,6 +621,7 @@
     }
     body{ padding:0; background:#fff; }
     .table-wrap{ border:none; box-shadow:none; }
+    .main-table-wrap{ max-height:none; overflow-y:visible; }
     table{ min-width:0; font-size:10.5px; }
     thead th{ position:static; }
     thead th:first-child, tbody td:first-child{ position:static; }
@@ -696,7 +704,7 @@
 
   <div id="printHeader" class="print-header-block">Conto Economico Mensile<div class="print-sub" id="printHeaderSub"></div></div>
 
-  <div class="table-wrap">
+  <div class="table-wrap main-table-wrap">
   <table id="mainTable">
     <thead>
       <tr id="headerRow">
@@ -6356,4 +6364,4 @@ render();
 
 </body>
 </html>
-aggiornamento app
+
