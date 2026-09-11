@@ -536,7 +536,7 @@
     padding:4px 0 8px;
   }
 
-  .spese-account-header{
+  .account-group-header{
     font-size:12.5px;
     font-weight:700;
     color:var(--muted);
@@ -549,13 +549,13 @@
     gap:6px;
     user-select:none;
   }
-  .spese-account-header:first-child{ margin-top:0; border-top:none; }
-  .spese-account-header .spese-toggle-arrow{
+  .account-group-header:first-child{ margin-top:0; border-top:none; }
+  .account-group-header .account-group-toggle-arrow{
     display:inline-block;
     transition:transform 0.15s ease;
     font-size:10px;
   }
-  .spese-account-header.collapsed .spese-toggle-arrow{ transform:rotate(-90deg); }
+  .account-group-header.collapsed .account-group-toggle-arrow{ transform:rotate(-90deg); }
 
   .add-account-select{
     padding:6px 8px;
@@ -1426,10 +1426,11 @@ const coaCollapsed = { ricavi:true, costi_dir:true, costi_ind:true, oneri:true }
 
 // Stato di espansione dei gruppi per conto nella lista "Spese raggruppate": di default tutti
 // chiusi, si aprono singolarmente al click sull'intestazione (o tutti durante una ricerca attiva).
+// Stato di espansione dei gruppi per conto nelle liste "Spese raggruppate" e "Spostamenti":
+// di default tutti chiusi, si aprono singolarmente al click sull'intestazione (o tutti durante
+// una ricerca attiva). Ogni scheda ha il proprio oggetto di stato, indipendente dalle altre.
 const speseAccountCollapsed = {};
-function isSpesaAccountCollapsed(key){
-  return speseAccountCollapsed[key] !== false;
-}
+const spostamentiAccountCollapsed = {};
 
 function matchesSearch(fields, query){
   if(!query) return true;
@@ -4129,8 +4130,8 @@ function renderSpeseList(){
       });
       if(entries.length === 0) return;
       usedIds.add(acc.id);
-      list.appendChild(buildSpesaAccountHeader(acc.id, acc.name, entries.length, q));
-      if(q || !isSpesaAccountCollapsed(acc.id)){
+      list.appendChild(buildAccountGroupHeader(speseAccountCollapsed, acc.id, acc.name, entries.length, q, renderSpeseList));
+      if(q || speseAccountCollapsed[acc.id] === false){
         entries.forEach(({sp, idx})=> list.appendChild(buildSpesaRow(sp, idx)));
       }
     });
@@ -4145,27 +4146,30 @@ function renderSpeseList(){
     orphan.push({ sp, idx });
   });
   if(orphan.length){
-    list.appendChild(buildSpesaAccountHeader('__orphan__', '(conto eliminato)', orphan.length, q));
-    if(q || !isSpesaAccountCollapsed('__orphan__')){
+    list.appendChild(buildAccountGroupHeader(speseAccountCollapsed, '__orphan__', '(conto eliminato)', orphan.length, q, renderSpeseList));
+    if(q || speseAccountCollapsed['__orphan__'] === false){
       orphan.forEach(({sp, idx})=> list.appendChild(buildSpesaRow(sp, idx)));
     }
   }
 }
 
-function buildSpesaAccountHeader(key, label, count, activeQuery){
-  const isCollapsed = activeQuery ? false : isSpesaAccountCollapsed(key);
+// Intestazione generica, apri/chiudi, per raggruppare per conto le liste di voci puntuali
+// (Spese raggruppate, Spostamenti, ...). collapsedState è l'oggetto di stato del chiamante
+// (una voce per conto/chiave), onToggle è la funzione di render da richiamare dopo il click.
+function buildAccountGroupHeader(collapsedState, key, label, count, activeQuery, onToggle){
+  const isCollapsed = activeQuery ? false : (collapsedState[key] !== false);
   const header = document.createElement('div');
-  header.className = 'spese-account-header' + (isCollapsed ? ' collapsed' : '');
+  header.className = 'account-group-header' + (isCollapsed ? ' collapsed' : '');
   const arrow = document.createElement('span');
-  arrow.className = 'spese-toggle-arrow';
+  arrow.className = 'account-group-toggle-arrow';
   arrow.textContent = '▾';
   header.appendChild(arrow);
   const text = document.createElement('span');
   text.textContent = label + ' (' + count + ')';
   header.appendChild(text);
   header.addEventListener('click', ()=>{
-    speseAccountCollapsed[key] = !isSpesaAccountCollapsed(key);
-    renderSpeseList();
+    collapsedState[key] = !(collapsedState[key] !== false);
+    onToggle();
   });
   return header;
 }
@@ -4721,15 +4725,52 @@ function renderSpostamentiList(){
     empty.className = 'panel-empty';
     empty.textContent = 'Nessuno spostamento inserito. Usa il pulsante qui sotto per aggiungerne uno.';
     list.appendChild(empty);
+    return;
   } else if(visibleCount === 0){
     const empty = document.createElement('div');
     empty.className = 'panel-empty';
     empty.textContent = 'Nessuno spostamento trovato per la ricerca.';
     list.appendChild(empty);
+    return;
   }
 
+  // Raggruppa gli spostamenti per conto (nell'ordine sezione/piano dei conti); ogni gruppo è
+  // chiuso di default e si apre al click sulla sua intestazione (o durante una ricerca attiva).
+  const usedIds = new Set();
+  SECTIONS.filter(sec=>sec.kind==='accounts').forEach(sec=>{
+    accountsByCategory(sec.id).forEach(acc=>{
+      const entries = [];
+      data.spostamenti.forEach((s, idx)=>{
+        if(s.accountId !== acc.id) return;
+        if(!matchS(s)) return;
+        entries.push({ s, idx });
+      });
+      if(entries.length === 0) return;
+      usedIds.add(acc.id);
+      list.appendChild(buildAccountGroupHeader(spostamentiAccountCollapsed, acc.id, acc.name, entries.length, q, renderSpostamentiList));
+      if(q || spostamentiAccountCollapsed[acc.id] === false){
+        entries.forEach(({s, idx})=> list.appendChild(buildSpostamentoEntryRow(s, idx)));
+      }
+    });
+  });
+
+  // voci orfane, il cui conto non esiste più nel piano dei conti attuale
+  const orphan = [];
   data.spostamenti.forEach((s, idx)=>{
+    if(usedIds.has(s.accountId)) return;
+    if(getAccountById(s.accountId)) return;
     if(!matchS(s)) return;
+    orphan.push({ s, idx });
+  });
+  if(orphan.length){
+    list.appendChild(buildAccountGroupHeader(spostamentiAccountCollapsed, '__orphan__', '(conto eliminato)', orphan.length, q, renderSpostamentiList));
+    if(q || spostamentiAccountCollapsed['__orphan__'] === false){
+      orphan.forEach(({s, idx})=> list.appendChild(buildSpostamentoEntryRow(s, idx)));
+    }
+  }
+}
+
+function buildSpostamentoEntryRow(s, idx){
     const row = document.createElement('div');
     row.className = 'riparti-item';
 
@@ -4857,8 +4898,7 @@ function renderSpostamentiList(){
     });
     row.appendChild(delBtn);
 
-    list.appendChild(row);
-  });
+    return row;
 }
 
 function renderSpostamentiPivot(){
