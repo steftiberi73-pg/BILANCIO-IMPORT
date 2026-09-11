@@ -1,4 +1,4 @@
-<!<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="it">
 <head>
 <meta charset="UTF-8">
@@ -567,6 +567,12 @@
     color:var(--muted);
     opacity:0.85;
   }
+  .account-group-total{
+    margin-left:auto;
+    font-variant-numeric:tabular-nums;
+    font-weight:700;
+  }
+  .account-group-total.neg{ color:#b91c1c; }
 
   .add-account-select{
     padding:6px 8px;
@@ -4193,7 +4199,8 @@ function appendSpeseEntriesByVoce(list, accountKey, entries, activeQuery){
   });
   groups.forEach(g=>{
     const subKey = accountKey + '::' + g.key;
-    list.appendChild(buildAccountGroupHeader(speseVoceCollapsed, subKey, g.label, g.items.length, activeQuery, renderSpeseList, true));
+    const total = g.items.reduce((sum, {sp})=> sum + (parseFloat(sp.amount) || 0), 0);
+    list.appendChild(buildAccountGroupHeader(speseVoceCollapsed, subKey, g.label, g.items.length, activeQuery, renderSpeseList, true, total));
     if(activeQuery || speseVoceCollapsed[subKey] === false){
       g.items.forEach(({sp, idx})=> list.appendChild(buildSpesaRow(sp, idx)));
     }
@@ -4204,7 +4211,8 @@ function appendSpeseEntriesByVoce(list, accountKey, entries, activeQuery){
 // le liste di voci puntuali (Spese raggruppate, Spostamenti, ...). collapsedState è l'oggetto
 // di stato del chiamante (una voce per conto/chiave), onToggle è la funzione di render da
 // richiamare dopo il click. isSub=true la rende un'intestazione annidata (indentata, più piccola).
-function buildAccountGroupHeader(collapsedState, key, label, count, activeQuery, onToggle, isSub){
+// total, se passato (numero), mostra il totale del gruppo allineato a destra dell'intestazione.
+function buildAccountGroupHeader(collapsedState, key, label, count, activeQuery, onToggle, isSub, total){
   const isCollapsed = activeQuery ? false : (collapsedState[key] !== false);
   const header = document.createElement('div');
   header.className = 'account-group-header' + (isSub ? ' sub' : '') + (isCollapsed ? ' collapsed' : '');
@@ -4215,6 +4223,13 @@ function buildAccountGroupHeader(collapsedState, key, label, count, activeQuery,
   const text = document.createElement('span');
   text.textContent = label + ' (' + count + ')';
   header.appendChild(text);
+  if(total !== undefined && total !== null){
+    const totalSpan = document.createElement('span');
+    totalSpan.className = 'account-group-total';
+    totalSpan.textContent = fmt(total);
+    if(total < 0) totalSpan.classList.add('neg');
+    header.appendChild(totalSpan);
+  }
   header.addEventListener('click', ()=>{
     collapsedState[key] = !(collapsedState[key] !== false);
     onToggle();
@@ -6341,4 +6356,4 @@ render();
 
 </body>
 </html>
-aggiornamento app1109
+aggiornamento app
