@@ -898,7 +898,7 @@
 
   <div class="panel">
     <h2>Spostamenti</h2>
-    <div class="panel-hint">Sposta un importo già inserito da un mese a un altro per lo stesso conto: scegliendo conto e mese di origine viene proposto automaticamente l'importo già presente in quella riga, poi scegli il mese di destinazione. Il totale annuo del conto non cambia, solo la sua distribuzione mensile.</div>
+    <div class="panel-hint">Sposta un importo già inserito da un mese ad altri mesi per lo stesso conto: scegliendo conto e mese di origine viene proposto automaticamente l'importo già presente in quella riga. Scegli poi il tipo: "A un mese" sposta l'intero importo in un solo mese di destinazione; "Ripartito su più mesi" lo ripartisce in quote uguali su un numero di mesi consecutivi a partire dal mese scelto (utile al posto di "Importi da ripartire" quando l'importo riguarda già un conto specifico). Il totale annuo del conto non cambia, solo la sua distribuzione mensile.</div>
     <input type="text" id="searchSpostamenti" class="search-input" placeholder="Cerca per conto o mese...">
     <div id="spostamentiList"></div>
     <button class="panel-add-btn" id="addSpostamentoBtn">+ Aggiungi spostamento</button>
@@ -1651,15 +1651,27 @@ function previsionaliAccountsForCategory(category){
     .map(a=> ({ accountId: a.id, monthly: map[a.id] }));
 }
 
-// Sposta un importo dal mese di origine al mese di destinazione per lo stesso conto:
-// restituisce un array di 12 mesi con -importo nel mese origine e +importo nel mese destinazione.
+// Sposta un importo dal mese di origine per lo stesso conto. Due modalità:
+// - "singolo" (default, come prima): -importo nel mese origine, +importo in un unico mese destinazione.
+// - "ripartito": -importo nel mese origine, ripartito in quote uguali su "numMonths" mesi consecutivi
+//   a partire dal mese destinazione (stessa logica di "Importi da ripartire", ma legata a un conto).
 function computeSpostamentoMonthly(s){
   const monthly = Array(MONTHS).fill(0);
   const from = Math.min(Math.max(parseInt(s.fromMonth) || 0, 0), MONTHS-1);
-  const to = Math.min(Math.max(parseInt(s.toMonth) || 0, 0), MONTHS-1);
   const amount = parseFloat(s.amount) || 0;
   monthly[from] -= amount;
-  monthly[to] += amount;
+  if(s.tipo === 'ripartito'){
+    const numMonths = Math.max(1, parseInt(s.numMonths) || 1);
+    const startMonth = Math.min(Math.max(parseInt(s.toMonth) || 0, 0), MONTHS-1);
+    const quota = amount / numMonths;
+    for(let i=0;i<numMonths;i++){
+      const m = startMonth + i;
+      if(m>=0 && m<MONTHS) monthly[m] += quota;
+    }
+  } else {
+    const to = Math.min(Math.max(parseInt(s.toMonth) || 0, 0), MONTHS-1);
+    monthly[to] += amount;
+  }
   return monthly;
 }
 
@@ -5057,12 +5069,39 @@ function buildSpostamentoEntryRow(s, idx){
     fieldFrom.appendChild(selectFrom);
     row.appendChild(fieldFrom);
 
-    // mese di destinazione
+    // tipo di spostamento: a un singolo mese, oppure ripartito su più mesi consecutivi
+    const fieldTipo = document.createElement('div');
+    fieldTipo.className = 'field';
+    const labelTipo = document.createElement('span');
+    labelTipo.className = 'field-label';
+    labelTipo.textContent = 'Tipo';
+    const selectTipo = document.createElement('select');
+    [ { id:'singolo', label:'A un mese' }, { id:'ripartito', label:'Ripartito su più mesi' } ].forEach(opt=>{
+      const o = document.createElement('option');
+      o.value = opt.id; o.textContent = opt.label;
+      if((s.tipo||'singolo') === opt.id) o.selected = true;
+      selectTipo.appendChild(o);
+    });
+    selectTipo.addEventListener('change', (e)=>{
+      data.spostamenti[idx].tipo = e.target.value;
+      if(e.target.value === 'ripartito' && !data.spostamenti[idx].numMonths){
+        data.spostamenti[idx].numMonths = 1;
+      }
+      saveData();
+      render();
+    });
+    fieldTipo.appendChild(labelTipo);
+    fieldTipo.appendChild(selectTipo);
+    row.appendChild(fieldTipo);
+
+    const isRipartito = (s.tipo === 'ripartito');
+
+    // mese di destinazione (singolo) oppure mese di partenza della ripartizione
     const fieldTo = document.createElement('div');
     fieldTo.className = 'field';
     const labelTo = document.createElement('span');
     labelTo.className = 'field-label';
-    labelTo.textContent = 'A mese';
+    labelTo.textContent = isRipartito ? 'A partire da mese' : 'A mese';
     const selectTo = document.createElement('select');
     MONTH_NAMES.forEach((mName, mi)=>{
       const o = document.createElement('option');
@@ -5079,6 +5118,30 @@ function buildSpostamentoEntryRow(s, idx){
     fieldTo.appendChild(labelTo);
     fieldTo.appendChild(selectTo);
     row.appendChild(fieldTo);
+
+    // numero di mesi su cui ripartire (solo per il tipo "ripartito")
+    if(isRipartito){
+      const fieldNum = document.createElement('div');
+      fieldNum.className = 'field';
+      const labelNum = document.createElement('span');
+      labelNum.className = 'field-label';
+      labelNum.textContent = 'Numero mesi';
+      const inputNum = document.createElement('input');
+      inputNum.type = 'text';
+      inputNum.inputMode = 'numeric';
+      inputNum.style.flex = 'none';
+      inputNum.style.width = '70px';
+      inputNum.value = s.numMonths || 1;
+      inputNum.addEventListener('change', (e)=>{
+        const v = Math.max(1, parseInt(e.target.value) || 1);
+        data.spostamenti[idx].numMonths = v;
+        saveData();
+        render();
+      });
+      fieldNum.appendChild(labelNum);
+      fieldNum.appendChild(inputNum);
+      row.appendChild(fieldNum);
+    }
 
     // importo (proposto automaticamente, modificabile)
     const fieldAmount = document.createElement('div');
@@ -5111,7 +5174,9 @@ function buildSpostamentoEntryRow(s, idx){
     // info
     const info = document.createElement('div');
     info.className = 'quota-info';
-    info.textContent = MONTH_NAMES[s.fromMonth] + ' → ' + MONTH_NAMES[s.toMonth];
+    info.textContent = isRipartito
+      ? (MONTH_NAMES[s.fromMonth] + ' → ripartito da ' + MONTH_NAMES[s.toMonth] + ' per ' + (s.numMonths||1) + ' mes' + ((s.numMonths||1)===1?'e':'i'))
+      : (MONTH_NAMES[s.fromMonth] + ' → ' + MONTH_NAMES[s.toMonth]);
     row.appendChild(info);
 
     // elimina
@@ -5216,8 +5281,10 @@ document.getElementById('addSpostamentoBtn').addEventListener('click', ()=>{
   data.spostamenti.push({
     id: makeId(),
     accountId,
+    tipo: 'singolo',
     fromMonth,
     toMonth: 1,
+    numMonths: 1,
     amount: currentManualValueForAccount(accountId, fromMonth)
   });
   saveData();
