@@ -1953,8 +1953,44 @@ function buildSectionAccountRows(section){
 // ---- Conto economico "per codice conto": stessa azienda selezionata nella scheda Conto
 // Economico, ma con i conti ordinati/raggruppati per codice invece che per ordine di
 // inserimento. Sola consultazione: non introduce nuovi dati, riusa quelli dell'azienda corrente. ----
+// Somma mensile delle voci di "Spese raggruppate" che NON hanno un gruppo ("voce") assegnato:
+// queste restano legate al singolo conto, come prima (mappa accountId -> [12 mesi]).
+function speseMonthlyByAccountSenzaGruppo(){
+  const map = {};
+  data.speseRaggruppate.forEach(sp=>{
+    if(sp.voce) return; // le voci con un gruppo vengono mostrate raggruppate, non per conto
+    if(!sp.accountId) return;
+    if(!map[sp.accountId]) map[sp.accountId] = Array(MONTHS).fill(0);
+    const m = Math.min(Math.max(parseInt(sp.month)||0, 0), MONTHS-1);
+    map[sp.accountId][m] += parseFloat(sp.amount) || 0;
+  });
+  return map;
+}
+function speseAccountsForCategorySenzaGruppo(category){
+  const map = speseMonthlyByAccountSenzaGruppo();
+  return accountsByCategory(category)
+    .filter(a=> map[a.id])
+    .map(a=> ({ accountId: a.id, monthly: map[a.id] }));
+}
+
+// Somma mensile delle voci di "Spese raggruppate" CHE HANNO un gruppo ("voce"), per i conti
+// di una sezione: mappa "voce" -> [12 mesi], sommando tutti i conti che condividono quel gruppo.
+function speseByGruppoForCategory(category){
+  const result = {};
+  data.speseRaggruppate.forEach(sp=>{
+    if(!sp.voce) return;
+    const acc = store.chartOfAccounts.find(a=> a.id === sp.accountId);
+    if(!acc || acc.category !== category) return;
+    if(!result[sp.voce]) result[sp.voce] = Array(MONTHS).fill(0);
+    const m = Math.min(Math.max(parseInt(sp.month)||0, 0), MONTHS-1);
+    result[sp.voce][m] += parseFloat(sp.amount) || 0;
+  });
+  return result;
+}
+
 function computeByCode(){
-  const perAccount = {};          // accountId -> monthly[12] (manuale + spese + previsionale + spostamenti)
+  const perAccount = {};          // accountId -> monthly[12] (manuale + spese senza gruppo + previsionale + spostamenti)
+  const spesePerGruppo = {};      // sectionId -> { voce -> monthly[12] } per le spese raggruppate CON un gruppo
   const ripartitiPerSection = {}; // sectionId -> monthly[12] degli "importi da ripartire" (non legati a un conto)
   const sectionTotals = {};       // sectionId -> monthly[12] totale sezione (conti + ripartiti + spese + previsionale + spostamenti)
   SECTION_IDS.forEach(sid=>{
@@ -1969,9 +2005,10 @@ function computeByCode(){
 
   SECTION_IDS.forEach(sid=>{
     data[sid].forEach(acc=> addTo(perAccount, acc.accountId, acc.values.map(v=> parseFloat(v)||0)));
-    speseAccountsForCategory(sid).forEach(sp=> addTo(perAccount, sp.accountId, sp.monthly));
+    speseAccountsForCategorySenzaGruppo(sid).forEach(sp=> addTo(perAccount, sp.accountId, sp.monthly));
     previsionaliAccountsForCategory(sid).forEach(p=> addTo(perAccount, p.accountId, p.monthly));
     spostamentiAccountsForCategory(sid).forEach(s=> addTo(perAccount, s.accountId, s.monthly));
+    spesePerGruppo[sid] = speseByGruppoForCategory(sid);
     ripartizioniForDest(sid).forEach(r=>{
       computeRipartizioneMonthly(r).forEach((v,i)=>{ ripartitiPerSection[sid][i] += v; });
     });
@@ -1982,7 +2019,7 @@ function computeByCode(){
   const molMonthly = sectionTotals.ricavi.map((v,i)=> v - sectionTotals.costi_dir[i]);
   const risultatoMonthly = molMonthly.map((v,i)=> v - sectionTotals.costi_ind[i] - sectionTotals.oneri[i]);
 
-  return { perAccount, ripartitiPerSection, sectionTotals, mol: molMonthly, risultato: risultatoMonthly };
+  return { perAccount, spesePerGruppo, ripartitiPerSection, sectionTotals, mol: molMonthly, risultato: risultatoMonthly };
 }
 
 function renderByCode(){
@@ -2057,6 +2094,17 @@ function renderByCode(){
       if(ripMonthly.some(v=>v!==0)){
         appendRow('Importi da ripartire <span class="badge">ripartito</span>', ripMonthly, 'derived-row ' + section.cls);
       }
+
+      // le "Spese raggruppate" con un gruppo assegnato (es. "Spese personale") compaiono qui
+      // come un'unica riga per gruppo, sommando tutti i conti che ne fanno parte, invece di
+      // elencare ogni singolo conto sottostante.
+      const gruppi = byCode.spesePerGruppo[section.id] || {};
+      Object.keys(gruppi).sort((a,b)=> a.localeCompare(b, 'it')).forEach(voce=>{
+        const monthly = gruppi[voce];
+        if(monthly.some(v=>v!==0)){
+          appendRow(voce + ' <span class="badge">spese raggruppate</span>', monthly, 'derived-row ' + section.cls);
+        }
+      });
 
       appendRow('Totale ' + section.label, byCode.sectionTotals[section.id], 'total-row ' + section.cls);
     } else {
@@ -5606,6 +5654,14 @@ function buildByCodeReportRows(){
       const total = ripMonthly.reduce((a,b)=>a+b,0);
       rows.push(['Importi da ripartire (ripartito)', ...ripMonthly, total]);
     }
+    const gruppi = byCode.spesePerGruppo[sectionId] || {};
+    Object.keys(gruppi).sort((a,b)=> a.localeCompare(b, 'it')).forEach(voce=>{
+      const monthly = gruppi[voce];
+      if(monthly.some(v=>v!==0)){
+        const total = monthly.reduce((a,b)=>a+b,0);
+        rows.push([voce + ' (spese raggruppate)', ...monthly, total]);
+      }
+    });
     const sectMonthly = byCode.sectionTotals[sectionId];
     const sectTotal = sectMonthly.reduce((a,b)=>a+b,0);
     rows.push(['Totale ' + label, ...sectMonthly, sectTotal]);
