@@ -362,6 +362,15 @@
     border-radius:10px;
     margin-left:6px;
   }
+  tr.derived-row.group-toggle-row{ cursor:pointer; }
+  .row-toggle-arrow{
+    display:inline-block;
+    margin-right:5px;
+    transition:transform .12s ease;
+    font-size:10px;
+  }
+  .row-toggle-arrow.collapsed{ transform:rotate(-90deg); }
+  tr.derived-row.sub-row td:first-child{ padding-left:26px; }
   .acc-code-chip{
     display:inline-block;
     font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
@@ -1542,6 +1551,10 @@ const speseAccountCollapsed = {};
 // Chiave: accountId + '::' + voce (normalizzata). Stesso comportamento: chiuso di default,
 // si apre al click o durante una ricerca attiva.
 const speseVoceCollapsed = {};
+// Stato di espansione della riga "Ricavi monte ore" (derivata) in "Bilancio per commessa":
+// di default chiusa (mostra solo il totale del conto), si apre al click per vedere il
+// dettaglio per dipendente. Chiave: accountId.
+const monteOreRowCollapsed = {};
 const spostamentiAccountCollapsed = {};
 
 function matchesSearch(fields, query){
@@ -2176,11 +2189,28 @@ function monteOreMonthlyByAccount(commessaId){
   return map;
 }
 
+// Mappa accountId -> { dipendente: monthly[12] } con il dettaglio per dipendente del monte ore
+// inserito per una commessa (solo per il conto "Ricavi monte ore"), usata per la riga
+// espandibile "Ricavi monte ore" in "Bilancio per commessa".
+function monteOreMonthlyByAccountAndDipendente(commessaId){
+  const map = {};
+  data.monteOre.forEach(mo=>{
+    if(mo.commessaId !== commessaId) return;
+    const dip = String(mo.dipendente||'').trim() || '(senza nome)';
+    if(!map[mo.accountId]) map[mo.accountId] = {};
+    if(!map[mo.accountId][dip]) map[mo.accountId][dip] = Array(MONTHS).fill(0);
+    const m = Math.min(Math.max(parseInt(mo.mese)||0, 0), MONTHS-1);
+    map[mo.accountId][dip][m] += (parseFloat(mo.ore)||0) * (parseFloat(mo.tariffa)||0);
+  });
+  return map;
+}
+
 function computeCommessaTotals(commessaId, opts){
   opts = opts || {};
   const perAccount = commessaMonthlyByAccount(commessaId);
   const perAccountFornitori = fornitoriMonthlyByAccount(commessaId);
   const perAccountMonteOre = monteOreMonthlyByAccount(commessaId);
+  const perAccountMonteOreByDipendente = monteOreMonthlyByAccountAndDipendente(commessaId);
   const sectionTotals = {};
   SECTION_IDS.forEach(sid=>{ sectionTotals[sid] = Array(MONTHS).fill(0); });
   Object.keys(perAccount).forEach(accId=>{
@@ -2216,7 +2246,7 @@ function computeCommessaTotals(commessaId, opts){
 
   const molMonthly = sectionTotals.ricavi.map((v,i)=> v - sectionTotals.costi_dir[i]);
   const risultatoMonthly = molMonthly.map((v,i)=> v - sectionTotals.costi_ind[i] - sectionTotals.oneri[i]);
-  return { perAccount, perAccountFornitori, perAccountMonteOre, overheadQuota, sectionTotals, mol: molMonthly, risultato: risultatoMonthly };
+  return { perAccount, perAccountFornitori, perAccountMonteOre, perAccountMonteOreByDipendente, overheadQuota, sectionTotals, mol: molMonthly, risultato: risultatoMonthly };
 }
 
 // Ripartisce, mese per mese, i Costi diretti (compresi i Costi di produzione, incluse le
@@ -2443,15 +2473,28 @@ function renderCommessaTable(){
       });
 
       // riga derivata dal "Ricavi monte ore" (solo per il conto Ricavi monte ore): la somma
-      // di ore lavorate x tariffa oraria popola qui il conto
+      // di ore lavorate x tariffa oraria popola qui il conto. La riga è espandibile: chiusa
+      // mostra solo il totale del conto, aperta mostra una riga per ciascun dipendente.
       Object.keys(totals.perAccountMonteOre).forEach(accId=>{
         const acc = getAccountById(accId);
         if(!acc || acc.category !== section.id) return;
         const monthly = totals.perAccountMonteOre[accId];
+        const byDipendente = totals.perAccountMonteOreByDipendente[accId] || {};
+        const dipendenti = Object.keys(byDipendente).sort((a,b)=> a.localeCompare(b, 'it'));
+        const isCollapsed = monteOreRowCollapsed[accId] !== false;
+
         const tr = document.createElement('tr');
-        tr.className = 'derived-row ' + section.cls;
+        tr.className = 'derived-row group-toggle-row ' + section.cls;
         const tdName = document.createElement('td');
-        tdName.innerHTML = getAccountName(accId) + ' <span class="badge">da monte ore</span>';
+        const arrow = document.createElement('span');
+        arrow.className = 'row-toggle-arrow' + (isCollapsed ? ' collapsed' : '');
+        arrow.textContent = '▾';
+        tdName.appendChild(arrow);
+        tdName.appendChild(document.createTextNode(getAccountName(accId) + ' '));
+        const badge = document.createElement('span');
+        badge.className = 'badge';
+        badge.textContent = 'da monte ore, per dipendente';
+        tdName.appendChild(badge);
         tr.appendChild(tdName);
         let rowTotal = 0;
         monthly.forEach(v=>{
@@ -2464,7 +2507,34 @@ function renderCommessaTable(){
         tdTotal.className = 'row-total total-col';
         tdTotal.textContent = fmt(rowTotal);
         tr.appendChild(tdTotal);
+        tr.addEventListener('click', ()=>{
+          monteOreRowCollapsed[accId] = !isCollapsed;
+          renderCommessaTable();
+        });
         tbody.appendChild(tr);
+
+        if(!isCollapsed){
+          dipendenti.forEach(dip=>{
+            const dipMonthly = byDipendente[dip];
+            const dipTr = document.createElement('tr');
+            dipTr.className = 'derived-row sub-row ' + section.cls;
+            const dipTdName = document.createElement('td');
+            dipTdName.textContent = dip;
+            dipTr.appendChild(dipTdName);
+            let dipTotal = 0;
+            dipMonthly.forEach(v=>{
+              const td = document.createElement('td');
+              td.textContent = fmt(v);
+              dipTr.appendChild(td);
+              dipTotal += v;
+            });
+            const dipTdTotal = document.createElement('td');
+            dipTdTotal.className = 'row-total total-col';
+            dipTdTotal.textContent = fmt(dipTotal);
+            dipTr.appendChild(dipTdTotal);
+            tbody.appendChild(dipTr);
+          });
+        }
       });
 
       // riga derivata dalla ripartizione automatica di Costi diretti / Costi indiretti / Oneri
