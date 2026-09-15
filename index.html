@@ -6430,12 +6430,29 @@ const ODOO_SECTION_OPTIONS = [
 
 let odooLoadedAccounts = [];
 let odooRowSelections = {}; // account_id -> sectionId scelto dall'utente
+let odooRowSpese = {};      // account_id -> true se va importato come "Spesa raggruppata"
 
-function odooDefaultSection(internalGroup){
+// Regole salvate (codice conto Odoo -> { section, spese }), usate come proposta di default
+// nei prossimi import così non serve riclassificare ogni volta gli stessi conti.
+function odooGetSavedRule(code){
+  if(!code) return null;
+  if(!store.odooImportRules) store.odooImportRules = {};
+  return store.odooImportRules[code] || null;
+}
+
+function odooDefaultSection(internalGroup, code){
+  const rule = odooGetSavedRule(code);
+  if(rule && rule.section) return rule.section;
   return internalGroup === 'income' ? 'ricavi' : 'costi_ind';
 }
 
+function odooDefaultSpese(code){
+  const rule = odooGetSavedRule(code);
+  return !!(rule && rule.spese);
+}
+
 function odooOpenModal(){
+  if(!store.odooImportRules) store.odooImportRules = {};
   document.getElementById('odooCompanyName').textContent = getCurrentCompany().name || '';
   document.getElementById('odooYearField').value = document.getElementById('yearField').value || '2026';
   document.getElementById('odooStatusMsg').textContent = '';
@@ -6475,8 +6492,10 @@ function odooRenderAccountsTable(accounts){
   const tbody = document.getElementById('odooAccountsBody');
   tbody.innerHTML = '';
   odooRowSelections = {};
+  odooRowSpese = {};
   accounts.forEach(acc=>{
-    odooRowSelections[acc.account_id] = odooDefaultSection(acc.internal_group);
+    odooRowSelections[acc.account_id] = odooDefaultSection(acc.internal_group, acc.code);
+    odooRowSpese[acc.account_id] = odooDefaultSpese(acc.code);
 
     const tr = document.createElement('tr');
     tr.style.borderTop = '1px solid var(--border)';
@@ -6530,6 +6549,25 @@ function odooRenderAccountsTable(accounts){
       btnGroup.appendChild(b);
     });
     tdSel.appendChild(btnGroup);
+
+    const speseLabel = document.createElement('label');
+    speseLabel.style.display = 'flex';
+    speseLabel.style.alignItems = 'center';
+    speseLabel.style.gap = '4px';
+    speseLabel.style.marginTop = '4px';
+    speseLabel.style.fontSize = '11.5px';
+    speseLabel.style.color = 'var(--muted)';
+    speseLabel.style.cursor = 'pointer';
+    const speseCheckbox = document.createElement('input');
+    speseCheckbox.type = 'checkbox';
+    speseCheckbox.checked = !!odooRowSpese[acc.account_id];
+    speseCheckbox.addEventListener('change', ()=>{
+      odooRowSpese[acc.account_id] = speseCheckbox.checked;
+    });
+    speseLabel.appendChild(speseCheckbox);
+    speseLabel.appendChild(document.createTextNode('Spesa raggruppata'));
+    tdSel.appendChild(speseLabel);
+
     tr.appendChild(tdSel);
 
     tbody.appendChild(tr);
@@ -6570,12 +6608,18 @@ document.getElementById('odooLoadBtn').addEventListener('click', async ()=>{
   }
 });
 
-function odooUpsertRow(sectionId, name, code, months){
+// Trova (o crea) nel piano dei conti condiviso il conto per una sezione + nome dati, e ne
+// restituisce l'oggetto (usato sia per la riga diretta che per le "Spese raggruppate").
+function odooResolveAccount(sectionId, name, code){
   let acc = store.chartOfAccounts.find(a=> a.category === sectionId && a.name === name);
   if(!acc){
     acc = { id: makeId(), name, category: sectionId, code: nextAccountCode() };
     store.chartOfAccounts.push(acc);
   }
+  return acc;
+}
+
+function odooSetRowValues(sectionId, acc, months){
   let row = data[sectionId].find(r=> r.accountId === acc.id);
   if(!row){
     row = { accountId: acc.id, values: Array(MONTHS).fill(0) };
@@ -6584,18 +6628,39 @@ function odooUpsertRow(sectionId, name, code, months){
   row.values = months.slice(0, MONTHS);
 }
 
+// Sostituisce le voci di "Spese raggruppate" create da un import precedente per questo conto
+// (riconoscibili dal flag odooImport) con quelle nuove, una per ogni mese diverso da zero.
+function odooSetSpeseRaggruppate(acc, months){
+  data.speseRaggruppate = data.speseRaggruppate.filter(sp=> !(sp.accountId === acc.id && sp.odooImport));
+  months.forEach((val, m)=>{
+    if(Math.abs(val) > 0.0001){
+      data.speseRaggruppate.push({ id: makeId(), month: m, accountId: acc.id, voce: 'Da Odoo', amount: val, odooImport: true });
+    }
+  });
+}
+
 document.getElementById('odooImportConfirmBtn').addEventListener('click', ()=>{
   let imported = 0;
+  if(!store.odooImportRules) store.odooImportRules = {};
   odooLoadedAccounts.forEach(acc=>{
     const sectionId = odooRowSelections[acc.account_id];
     if(!sectionId || sectionId === 'ignora') return;
-    odooUpsertRow(sectionId, acc.name, acc.code, acc.months);
+    const useSpese = !!odooRowSpese[acc.account_id];
+    const accObj = odooResolveAccount(sectionId, acc.name, acc.code);
+    if(useSpese){
+      odooSetSpeseRaggruppate(accObj, acc.months);
+    } else {
+      odooSetRowValues(sectionId, accObj, acc.months);
+    }
+    if(acc.code){
+      store.odooImportRules[acc.code] = { section: sectionId, spese: useSpese };
+    }
     imported++;
   });
   saveData();
   render();
   odooCloseModal();
-  alert('Importazione da Odoo completata: ' + imported + ' conti aggiornati per "' + getCurrentCompany().name + '".');
+  alert('Importazione da Odoo completata: ' + imported + ' conti aggiornati per "' + getCurrentCompany().name + '". Le scelte fatte (sezione e "spesa raggruppata") verranno riproposte automaticamente al prossimo import.');
 });
 </script>
 
