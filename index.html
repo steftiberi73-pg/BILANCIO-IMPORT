@@ -750,10 +750,13 @@
         <input type="text" id="odooBridgeUrl" value="http://localhost:5001">
         <label for="odooYearField">Anno:</label>
         <input type="text" id="odooYearField" value="2026" style="width:70px;">
+        <label for="odooFromDateField">Da data (opz.):</label>
+        <input type="date" id="odooFromDateField" style="width:145px;">
         <label for="odooCompanySelect">Azienda Odoo:</label>
         <select id="odooCompanySelect" style="min-width:160px;"><option value="">(tutte)</option></select>
         <button id="odooLoadBtn">Carica da Odoo</button>
       </div>
+      <div class="panel-hint" style="margin-top:6px;">Se compili "Da data" (deve cadere nell'anno scelto sopra), i mesi precedenti a quella data non vengono toccati dall'import: restano quelli già presenti (importati prima o inseriti a mano), non vengono azzerati.</div>
       <div id="odooStatusMsg" style="margin:10px 0; font-size:13px; color:var(--muted);"></div>
       <div id="odooTableWrap" style="display:none; max-height:50vh; overflow-y:auto; overflow-x:auto; border:1px solid var(--border); border-radius:8px;">
         <table id="odooImportTable">
@@ -6710,6 +6713,11 @@ const ODOO_SECTION_OPTIONS = [
 
 let odooLoadedAccounts = [];
 let odooRowSelections = {}; // account_id -> sectionId scelto dall'utente
+// Intervallo di mesi (indice 0-11) effettivamente caricato dall'ultima chiamata al bridge:
+// di default tutto l'anno, oppure ristretto se è stato usato il filtro "Da data"/"A data".
+// Serve per NON toccare in fase di import i mesi fuori da questo intervallo (che restano 0
+// nei dati caricati da Odoo solo perché non sono stati richiesti, non perché siano davvero 0).
+let odooLoadedRange = { fromMonth: 0, toMonth: MONTHS - 1 };
 
 // Regole salvate (codice conto Odoo -> { section }), usate come proposta di default nei
 // prossimi import così non serve riclassificare ogni volta gli stessi conti. L'eventuale
@@ -6730,11 +6738,13 @@ function odooOpenModal(){
   if(!store.odooImportRules) store.odooImportRules = {};
   document.getElementById('odooCompanyName').textContent = getCurrentCompany().name || '';
   document.getElementById('odooYearField').value = document.getElementById('yearField').value || '2026';
+  document.getElementById('odooFromDateField').value = '';
   document.getElementById('odooStatusMsg').textContent = '';
   document.getElementById('odooTableWrap').style.display = 'none';
   document.getElementById('odooAccountsBody').innerHTML = '';
   document.getElementById('odooImportConfirmBtn').disabled = true;
   odooLoadedAccounts = [];
+  odooLoadedRange = { fromMonth: 0, toMonth: MONTHS - 1 };
   document.getElementById('odooModalOverlay').style.display = 'flex';
   odooLoadCompanies();
 }
@@ -6837,12 +6847,14 @@ document.getElementById('odooLoadBtn').addEventListener('click', async ()=>{
   const statusEl = document.getElementById('odooStatusMsg');
   const bridgeUrl = document.getElementById('odooBridgeUrl').value.replace(/\/$/, '');
   const anno = document.getElementById('odooYearField').value.trim();
+  const daData = document.getElementById('odooFromDateField').value.trim();
   const companyId = document.getElementById('odooCompanySelect').value;
   statusEl.textContent = 'Connessione al bridge in corso...';
   document.getElementById('odooTableWrap').style.display = 'none';
   document.getElementById('odooImportConfirmBtn').disabled = true;
   try{
     let url = bridgeUrl + '/api/movimenti?anno=' + encodeURIComponent(anno);
+    if(daData) url += '&da_data=' + encodeURIComponent(daData);
     if(companyId) url += '&company_id=' + encodeURIComponent(companyId);
     const resp = await fetch(url);
     const json = await resp.json();
@@ -6851,11 +6863,20 @@ document.getElementById('odooLoadBtn').addEventListener('click', async ()=>{
       return;
     }
     odooLoadedAccounts = json.accounts || [];
+    const rangeFrom = json.da_data || (anno + '-01-01');
+    const rangeTo = json.a_data || (anno + '-12-31');
+    odooLoadedRange = {
+      fromMonth: Math.min(Math.max(parseInt(rangeFrom.slice(5,7), 10) - 1, 0), MONTHS - 1),
+      toMonth: Math.min(Math.max(parseInt(rangeTo.slice(5,7), 10) - 1, 0), MONTHS - 1),
+    };
+    const periodoTxt = (json.da_data && json.da_data !== (anno + '-01-01'))
+      ? ('dal ' + json.da_data.split('-').reverse().join('/') + ' al ' + (json.a_data||(anno+'-12-31')).split('-').reverse().join('/'))
+      : ('per l\'anno ' + anno);
     if(odooLoadedAccounts.length === 0){
-      statusEl.textContent = 'Nessuna registrazione contabile trovata per l\'anno ' + anno + '.';
+      statusEl.textContent = 'Nessuna registrazione contabile trovata ' + periodoTxt + '.';
       return;
     }
-    statusEl.textContent = odooLoadedAccounts.length + ' conti caricati da Odoo per l\'anno ' + anno + '. Controlla la sezione proposta per ciascuno, poi importa.';
+    statusEl.textContent = odooLoadedAccounts.length + ' conti caricati da Odoo ' + periodoTxt + '. Controlla la sezione proposta per ciascuno, poi importa.';
     odooRenderAccountsTable(odooLoadedAccounts);
     document.getElementById('odooTableWrap').style.display = 'block';
     document.getElementById('odooImportConfirmBtn').disabled = false;
@@ -6875,13 +6896,22 @@ function odooResolveAccount(sectionId, name, code){
   return acc;
 }
 
-function odooSetRowValues(sectionId, acc, months){
+// Aggiorna i valori mensili di un conto con quelli caricati da Odoo. Se è stato usato il
+// filtro "Da data"/"A data" (range più stretto dell'intero anno), NON tocca i mesi fuori da
+// quell'intervallo: altrimenti, siccome il bridge restituisce 0 per i mesi non richiesti,
+// un'importazione parziale azzererebbe i mesi già presenti (importati prima o inseriti a mano).
+function odooSetRowValues(sectionId, acc, months, range){
   let row = data[sectionId].find(r=> r.accountId === acc.id);
   if(!row){
     row = { accountId: acc.id, values: Array(MONTHS).fill(0) };
     data[sectionId].push(row);
   }
-  row.values = months.slice(0, MONTHS);
+  const fromM = range ? range.fromMonth : 0;
+  const toM = range ? range.toMonth : MONTHS - 1;
+  for(let m=0; m<MONTHS; m++){
+    if(m < fromM || m > toM) continue; // fuori dal periodo caricato: lasciato invariato
+    row.values[m] = months[m] || 0;
+  }
 }
 
 // Sposta un conto dalla riga diretta di una sezione alle "Spese raggruppate", sotto la
@@ -6935,7 +6965,7 @@ document.getElementById('odooImportConfirmBtn').addEventListener('click', ()=>{
     const sectionId = odooRowSelections[acc.account_id];
     if(!sectionId || sectionId === 'ignora') return;
     const accObj = odooResolveAccount(sectionId, acc.name, acc.code);
-    odooSetRowValues(sectionId, accObj, acc.months);
+    odooSetRowValues(sectionId, accObj, acc.months, odooLoadedRange);
     if(acc.code){
       store.odooImportRules[acc.code] = { section: sectionId };
     }
