@@ -45,6 +45,13 @@
   .odoo-modal button.danger:hover{ background:#fde8e8; border-color:#dc2626; }
   .odoo-modal button:disabled{ opacity:0.5; cursor:not-allowed; }
   .odoo-modal select{ padding:5px 6px; border:1px solid var(--border); border-radius:6px; font-size:12.5px; }
+  /* Tabella dell'import Odoo: isolata dagli stili della tabella principale del Conto Economico
+     (che imposta min-width:1180px e altre regole pensate per quella tabella, non per questa). */
+  #odooImportTable{
+    width:100%; min-width:0; table-layout:fixed; border-collapse:collapse; font-size:13px;
+  }
+  #odooImportTable thead th{ position:static; white-space:normal; }
+  #odooImportTable td{ vertical-align:top; overflow-wrap:break-word; word-break:break-word; }
   body{
     margin:0;
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
@@ -739,8 +746,13 @@
         <button id="odooLoadBtn">Carica da Odoo</button>
       </div>
       <div id="odooStatusMsg" style="margin:10px 0; font-size:13px; color:var(--muted);"></div>
-      <div id="odooTableWrap" style="display:none; max-height:50vh; overflow-y:auto; border:1px solid var(--border); border-radius:8px;">
-        <table style="width:100%; border-collapse:collapse; font-size:13px;">
+      <div id="odooTableWrap" style="display:none; max-height:50vh; overflow-y:auto; overflow-x:auto; border:1px solid var(--border); border-radius:8px;">
+        <table id="odooImportTable">
+          <colgroup>
+            <col style="width:34%;">
+            <col style="width:16%;">
+            <col style="width:50%;">
+          </colgroup>
           <thead>
             <tr style="background:#fafbfc;">
               <th style="text-align:left; padding:8px;">Conto Odoo</th>
@@ -799,6 +811,21 @@
 </div>
 
 <div id="tabSpese" class="tab-content">
+
+  <div class="panel">
+    <h2>Sposta un conto in "Spese raggruppate"</h2>
+    <div class="panel-hint">Utile dopo un'importazione da Odoo: scegli un conto già presente come riga diretta nel Conto Economico dell'azienda corrente e spostalo qui sotto un gruppo (es. "Spese personale" o "Altri costi"). I valori mensili passano dalla riga diretta alle voci di spesa raggruppata, senza sommarsi due volte.</div>
+    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:10px;">
+      <select id="moveToSpeseAccountSelect" style="min-width:260px; padding:6px 8px; border:1px solid var(--border); border-radius:6px; font-size:13px;"></select>
+      <input type="text" id="moveToSpeseVoceInput" placeholder="Gruppo (es. Spese personale)" list="moveToSpeseVoceOptions" style="min-width:200px; padding:6px 8px; border:1px solid var(--border); border-radius:6px; font-size:13px;">
+      <datalist id="moveToSpeseVoceOptions">
+        <option value="Spese personale">
+        <option value="Altri costi">
+      </datalist>
+      <button id="moveToSpeseBtn">Sposta</button>
+    </div>
+    <div id="moveToSpeseMsg" style="margin-top:8px; font-size:12.5px; color:var(--muted);"></div>
+  </div>
 
   <div class="panel">
     <h2>Spese raggruppate</h2>
@@ -4176,6 +4203,32 @@ function renderCostiManualiList(){
 function renderSpese(){
   renderSpeseList();
   renderSpesePivot();
+  renderMoveToSpeseSelect();
+}
+
+// Popola il menu "Sposta un conto in Spese raggruppate" con i conti che hanno attualmente
+// una riga diretta (con almeno un mese diverso da zero) nell'azienda corrente.
+function renderMoveToSpeseSelect(){
+  const sel = document.getElementById('moveToSpeseAccountSelect');
+  if(!sel) return;
+  const previousValue = sel.value;
+  sel.innerHTML = '';
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = '(scegli un conto)';
+  sel.appendChild(placeholder);
+
+  SECTIONS.filter(s=>s.kind === 'accounts').forEach(section=>{
+    (data[section.id] || []).forEach(row=>{
+      const hasValue = (row.values || []).some(v=> Math.abs(v) > 0.0001);
+      if(!hasValue) return;
+      const o = document.createElement('option');
+      o.value = section.id + '|' + row.accountId;
+      o.textContent = section.label + ': ' + getAccountName(row.accountId);
+      sel.appendChild(o);
+    });
+  });
+  if(previousValue && Array.from(sel.options).some(o=>o.value===previousValue)) sel.value = previousValue;
 }
 
 function renderSpeseList(){
@@ -6428,20 +6481,12 @@ const ODOO_SECTION_OPTIONS = [
   { id: 'ignora',    label: '(non importare)' },
 ];
 
-// Opzioni per le "Spese raggruppate": null = riga diretta nel Conto Economico, altrimenti
-// il valore è la "voce" con cui la spesa viene raggruppata nella scheda "Spese raggruppate".
-const ODOO_SPESE_OPTIONS = [
-  { id: null,                label: 'Riga diretta' },
-  { id: 'Spese personale',   label: 'Spese personale' },
-  { id: 'Altri costi',       label: 'Altri costi' },
-];
-
 let odooLoadedAccounts = [];
 let odooRowSelections = {}; // account_id -> sectionId scelto dall'utente
-let odooRowSpese = {};      // account_id -> null (riga diretta) oppure la "voce" di spesa raggruppata scelta
 
-// Regole salvate (codice conto Odoo -> { section, speseVoce }), usate come proposta di default
-// nei prossimi import così non serve riclassificare ogni volta gli stessi conti.
+// Regole salvate (codice conto Odoo -> { section }), usate come proposta di default nei
+// prossimi import così non serve riclassificare ogni volta gli stessi conti. L'eventuale
+// spostamento in "Spese raggruppate" si fa dopo l'import, dalla scheda "Spese raggruppate".
 function odooGetSavedRule(code){
   if(!code) return null;
   if(!store.odooImportRules) store.odooImportRules = {};
@@ -6452,11 +6497,6 @@ function odooDefaultSection(internalGroup, code){
   const rule = odooGetSavedRule(code);
   if(rule && rule.section) return rule.section;
   return internalGroup === 'income' ? 'ricavi' : 'costi_ind';
-}
-
-function odooDefaultSpese(code){
-  const rule = odooGetSavedRule(code);
-  return (rule && rule.speseVoce) ? rule.speseVoce : null;
 }
 
 function odooOpenModal(){
@@ -6500,16 +6540,15 @@ function odooRenderAccountsTable(accounts){
   const tbody = document.getElementById('odooAccountsBody');
   tbody.innerHTML = '';
   odooRowSelections = {};
-  odooRowSpese = {};
   accounts.forEach(acc=>{
     odooRowSelections[acc.account_id] = odooDefaultSection(acc.internal_group, acc.code);
-    odooRowSpese[acc.account_id] = odooDefaultSpese(acc.code);
 
     const tr = document.createElement('tr');
     tr.style.borderTop = '1px solid var(--border)';
 
     const tdName = document.createElement('td');
     tdName.style.padding = '6px 8px';
+    tdName.style.wordBreak = 'break-word';
     tdName.textContent = (acc.code ? acc.code + ' – ' : '') + acc.name;
     tr.appendChild(tdName);
 
@@ -6522,7 +6561,7 @@ function odooRenderAccountsTable(accounts){
 
     const tdSel = document.createElement('td');
     tdSel.style.padding = '6px 8px';
-    tdSel.style.whiteSpace = 'nowrap';
+    tdSel.style.wordBreak = 'break-word';
     const btnGroup = document.createElement('div');
     btnGroup.style.display = 'flex';
     btnGroup.style.gap = '4px';
@@ -6557,42 +6596,6 @@ function odooRenderAccountsTable(accounts){
       btnGroup.appendChild(b);
     });
     tdSel.appendChild(btnGroup);
-
-    const speseGroup = document.createElement('div');
-    speseGroup.style.display = 'flex';
-    speseGroup.style.gap = '4px';
-    speseGroup.style.flexWrap = 'wrap';
-    speseGroup.style.marginTop = '4px';
-
-    ODOO_SPESE_OPTIONS.forEach(opt=>{
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.textContent = opt.label;
-      b.style.fontSize = '11px';
-      b.style.padding = '3px 6px';
-      b.style.borderRadius = '5px';
-      b.style.border = '1px solid var(--border)';
-      b.style.cursor = 'pointer';
-      const setActiveStyle = ()=>{
-        const isActive = odooRowSpese[acc.account_id] === opt.id;
-        b.style.background = isActive ? 'var(--muted)' : 'var(--panel)';
-        b.style.color = isActive ? '#fff' : 'var(--muted)';
-        b.style.borderColor = isActive ? 'var(--muted)' : 'var(--border)';
-      };
-      setActiveStyle();
-      b.addEventListener('click', ()=>{
-        odooRowSpese[acc.account_id] = opt.id;
-        Array.from(speseGroup.children).forEach((child, i)=>{
-          const childOpt = ODOO_SPESE_OPTIONS[i];
-          const isActive = odooRowSpese[acc.account_id] === childOpt.id;
-          child.style.background = isActive ? 'var(--muted)' : 'var(--panel)';
-          child.style.color = isActive ? '#fff' : 'var(--muted)';
-          child.style.borderColor = isActive ? 'var(--muted)' : 'var(--border)';
-        });
-      });
-      speseGroup.appendChild(b);
-    });
-    tdSel.appendChild(speseGroup);
 
     tr.appendChild(tdSel);
 
@@ -6654,17 +6657,49 @@ function odooSetRowValues(sectionId, acc, months){
   row.values = months.slice(0, MONTHS);
 }
 
-// Sostituisce le voci di "Spese raggruppate" create da un import precedente per questo conto
-// (riconoscibili dal flag odooImport) con quelle nuove, una per ogni mese diverso da zero,
-// raggruppate sotto la "voce" scelta (es. "Spese personale" o "Altri costi").
-function odooSetSpeseRaggruppate(acc, months, voce){
-  data.speseRaggruppate = data.speseRaggruppate.filter(sp=> !(sp.accountId === acc.id && sp.odooImport));
+// Sposta un conto dalla riga diretta di una sezione alle "Spese raggruppate", sotto la
+// "voce" indicata (es. "Spese personale" o "Altri costi"): i valori mensili non zero diventano
+// voci di spesa raggruppata e la riga diretta viene rimossa, per evitare che l'importo si
+// sommi due volte nel Conto Economico. Rieseguire lo spostamento sullo stesso conto sostituisce
+// le voci create dallo spostamento precedente invece di duplicarle.
+function moveAccountToSpese(sectionId, accountId, voce){
+  const rowIdx = data[sectionId].findIndex(r=> r.accountId === accountId);
+  if(rowIdx === -1) return false;
+  const months = data[sectionId][rowIdx].values.slice();
+  data[sectionId].splice(rowIdx, 1);
+  data.speseRaggruppate = data.speseRaggruppate.filter(sp=> !(sp.accountId === accountId && sp.manualMove));
   months.forEach((val, m)=>{
     if(Math.abs(val) > 0.0001){
-      data.speseRaggruppate.push({ id: makeId(), month: m, accountId: acc.id, voce: voce, amount: val, odooImport: true });
+      data.speseRaggruppate.push({ id: makeId(), month: m, accountId: accountId, voce: voce, amount: val, manualMove: true });
     }
   });
+  return true;
 }
+
+document.getElementById('moveToSpeseBtn').addEventListener('click', ()=>{
+  const msgEl = document.getElementById('moveToSpeseMsg');
+  const selVal = document.getElementById('moveToSpeseAccountSelect').value;
+  const voce = document.getElementById('moveToSpeseVoceInput').value.trim();
+  if(!selVal){
+    msgEl.textContent = 'Scegli prima un conto dal menu.';
+    return;
+  }
+  if(!voce){
+    msgEl.textContent = 'Indica un gruppo (es. "Spese personale" o "Altri costi").';
+    return;
+  }
+  const [sectionId, accountId] = selVal.split('|');
+  const accName = getAccountName(accountId);
+  const ok = moveAccountToSpese(sectionId, accountId, voce);
+  if(!ok){
+    msgEl.textContent = 'Il conto scelto non ha più una riga diretta (forse è già stato spostato).';
+    return;
+  }
+  saveData();
+  render();
+  document.getElementById('moveToSpeseVoceInput').value = '';
+  msgEl.textContent = '"' + accName + '" spostato in Spese raggruppate, gruppo "' + voce + '".';
+});
 
 document.getElementById('odooImportConfirmBtn').addEventListener('click', ()=>{
   let imported = 0;
@@ -6672,22 +6707,17 @@ document.getElementById('odooImportConfirmBtn').addEventListener('click', ()=>{
   odooLoadedAccounts.forEach(acc=>{
     const sectionId = odooRowSelections[acc.account_id];
     if(!sectionId || sectionId === 'ignora') return;
-    const speseVoce = odooRowSpese[acc.account_id] || null;
     const accObj = odooResolveAccount(sectionId, acc.name, acc.code);
-    if(speseVoce){
-      odooSetSpeseRaggruppate(accObj, acc.months, speseVoce);
-    } else {
-      odooSetRowValues(sectionId, accObj, acc.months);
-    }
+    odooSetRowValues(sectionId, accObj, acc.months);
     if(acc.code){
-      store.odooImportRules[acc.code] = { section: sectionId, speseVoce: speseVoce };
+      store.odooImportRules[acc.code] = { section: sectionId };
     }
     imported++;
   });
   saveData();
   render();
   odooCloseModal();
-  alert('Importazione da Odoo completata: ' + imported + ' conti aggiornati per "' + getCurrentCompany().name + '". Le scelte fatte (sezione e "spesa raggruppata") verranno riproposte automaticamente al prossimo import.');
+  alert('Importazione da Odoo completata: ' + imported + ' conti aggiornati per "' + getCurrentCompany().name + '". La sezione scelta verrà riproposta automaticamente al prossimo import. Per raggruppare alcuni conti sotto "Spese personale" o "Altri costi", usa il nuovo strumento nella scheda "Spese raggruppate".');
 });
 </script>
 
