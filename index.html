@@ -6428,11 +6428,19 @@ const ODOO_SECTION_OPTIONS = [
   { id: 'ignora',    label: '(non importare)' },
 ];
 
+// Opzioni per le "Spese raggruppate": null = riga diretta nel Conto Economico, altrimenti
+// il valore è la "voce" con cui la spesa viene raggruppata nella scheda "Spese raggruppate".
+const ODOO_SPESE_OPTIONS = [
+  { id: null,                label: 'Riga diretta' },
+  { id: 'Spese personale',   label: 'Spese personale' },
+  { id: 'Altri costi',       label: 'Altri costi' },
+];
+
 let odooLoadedAccounts = [];
 let odooRowSelections = {}; // account_id -> sectionId scelto dall'utente
-let odooRowSpese = {};      // account_id -> true se va importato come "Spesa raggruppata"
+let odooRowSpese = {};      // account_id -> null (riga diretta) oppure la "voce" di spesa raggruppata scelta
 
-// Regole salvate (codice conto Odoo -> { section, spese }), usate come proposta di default
+// Regole salvate (codice conto Odoo -> { section, speseVoce }), usate come proposta di default
 // nei prossimi import così non serve riclassificare ogni volta gli stessi conti.
 function odooGetSavedRule(code){
   if(!code) return null;
@@ -6448,7 +6456,7 @@ function odooDefaultSection(internalGroup, code){
 
 function odooDefaultSpese(code){
   const rule = odooGetSavedRule(code);
-  return !!(rule && rule.spese);
+  return (rule && rule.speseVoce) ? rule.speseVoce : null;
 }
 
 function odooOpenModal(){
@@ -6550,23 +6558,41 @@ function odooRenderAccountsTable(accounts){
     });
     tdSel.appendChild(btnGroup);
 
-    const speseLabel = document.createElement('label');
-    speseLabel.style.display = 'flex';
-    speseLabel.style.alignItems = 'center';
-    speseLabel.style.gap = '4px';
-    speseLabel.style.marginTop = '4px';
-    speseLabel.style.fontSize = '11.5px';
-    speseLabel.style.color = 'var(--muted)';
-    speseLabel.style.cursor = 'pointer';
-    const speseCheckbox = document.createElement('input');
-    speseCheckbox.type = 'checkbox';
-    speseCheckbox.checked = !!odooRowSpese[acc.account_id];
-    speseCheckbox.addEventListener('change', ()=>{
-      odooRowSpese[acc.account_id] = speseCheckbox.checked;
+    const speseGroup = document.createElement('div');
+    speseGroup.style.display = 'flex';
+    speseGroup.style.gap = '4px';
+    speseGroup.style.flexWrap = 'wrap';
+    speseGroup.style.marginTop = '4px';
+
+    ODOO_SPESE_OPTIONS.forEach(opt=>{
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = opt.label;
+      b.style.fontSize = '11px';
+      b.style.padding = '3px 6px';
+      b.style.borderRadius = '5px';
+      b.style.border = '1px solid var(--border)';
+      b.style.cursor = 'pointer';
+      const setActiveStyle = ()=>{
+        const isActive = odooRowSpese[acc.account_id] === opt.id;
+        b.style.background = isActive ? 'var(--muted)' : 'var(--panel)';
+        b.style.color = isActive ? '#fff' : 'var(--muted)';
+        b.style.borderColor = isActive ? 'var(--muted)' : 'var(--border)';
+      };
+      setActiveStyle();
+      b.addEventListener('click', ()=>{
+        odooRowSpese[acc.account_id] = opt.id;
+        Array.from(speseGroup.children).forEach((child, i)=>{
+          const childOpt = ODOO_SPESE_OPTIONS[i];
+          const isActive = odooRowSpese[acc.account_id] === childOpt.id;
+          child.style.background = isActive ? 'var(--muted)' : 'var(--panel)';
+          child.style.color = isActive ? '#fff' : 'var(--muted)';
+          child.style.borderColor = isActive ? 'var(--muted)' : 'var(--border)';
+        });
+      });
+      speseGroup.appendChild(b);
     });
-    speseLabel.appendChild(speseCheckbox);
-    speseLabel.appendChild(document.createTextNode('Spesa raggruppata'));
-    tdSel.appendChild(speseLabel);
+    tdSel.appendChild(speseGroup);
 
     tr.appendChild(tdSel);
 
@@ -6629,12 +6655,13 @@ function odooSetRowValues(sectionId, acc, months){
 }
 
 // Sostituisce le voci di "Spese raggruppate" create da un import precedente per questo conto
-// (riconoscibili dal flag odooImport) con quelle nuove, una per ogni mese diverso da zero.
-function odooSetSpeseRaggruppate(acc, months){
+// (riconoscibili dal flag odooImport) con quelle nuove, una per ogni mese diverso da zero,
+// raggruppate sotto la "voce" scelta (es. "Spese personale" o "Altri costi").
+function odooSetSpeseRaggruppate(acc, months, voce){
   data.speseRaggruppate = data.speseRaggruppate.filter(sp=> !(sp.accountId === acc.id && sp.odooImport));
   months.forEach((val, m)=>{
     if(Math.abs(val) > 0.0001){
-      data.speseRaggruppate.push({ id: makeId(), month: m, accountId: acc.id, voce: 'Da Odoo', amount: val, odooImport: true });
+      data.speseRaggruppate.push({ id: makeId(), month: m, accountId: acc.id, voce: voce, amount: val, odooImport: true });
     }
   });
 }
@@ -6645,15 +6672,15 @@ document.getElementById('odooImportConfirmBtn').addEventListener('click', ()=>{
   odooLoadedAccounts.forEach(acc=>{
     const sectionId = odooRowSelections[acc.account_id];
     if(!sectionId || sectionId === 'ignora') return;
-    const useSpese = !!odooRowSpese[acc.account_id];
+    const speseVoce = odooRowSpese[acc.account_id] || null;
     const accObj = odooResolveAccount(sectionId, acc.name, acc.code);
-    if(useSpese){
-      odooSetSpeseRaggruppate(accObj, acc.months);
+    if(speseVoce){
+      odooSetSpeseRaggruppate(accObj, acc.months, speseVoce);
     } else {
       odooSetRowValues(sectionId, accObj, acc.months);
     }
     if(acc.code){
-      store.odooImportRules[acc.code] = { section: sectionId, spese: useSpese };
+      store.odooImportRules[acc.code] = { section: sectionId, speseVoce: speseVoce };
     }
     imported++;
   });
