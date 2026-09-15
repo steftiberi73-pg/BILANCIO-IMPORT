@@ -28,6 +28,23 @@
     --risultato-strong:#bdeee7;
   }
   *{box-sizing:border-box;}
+  .odoo-modal-overlay{
+    position:fixed; inset:0; background:rgba(0,0,0,0.4);
+    display:flex; align-items:flex-start; justify-content:center;
+    padding:5vh 16px; z-index:1000; overflow-y:auto;
+  }
+  .odoo-modal{
+    background:var(--panel); border-radius:10px; padding:20px 22px;
+    max-width:720px; width:100%; box-shadow:0 10px 30px rgba(0,0,0,0.2);
+  }
+  .odoo-modal-row{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px; }
+  .odoo-modal-row input[type="text"]{ padding:6px 8px; border:1px solid var(--border); border-radius:6px; font-size:13px; }
+  .odoo-modal-actions{ display:flex; gap:8px; justify-content:flex-end; margin-top:14px; }
+  .odoo-modal button{ background:var(--panel); border:1px solid var(--border); padding:7px 12px; border-radius:6px; font-size:13px; cursor:pointer; color:var(--text); }
+  .odoo-modal button:hover{ background:var(--accent-light); border-color:var(--accent); }
+  .odoo-modal button.danger:hover{ background:#fde8e8; border-color:#dc2626; }
+  .odoo-modal button:disabled{ opacity:0.5; cursor:not-allowed; }
+  .odoo-modal select{ padding:5px 6px; border:1px solid var(--border); border-radius:6px; font-size:12.5px; }
   body{
     margin:0;
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
@@ -687,6 +704,7 @@
     <button id="exportPdfBtn">Esporta PDF</button>
     <button id="importBtn">Importa CSV</button>
     <input type="file" id="importFile" accept=".csv" style="display:none">
+    <button id="importOdooBtn">Importa da Odoo</button>
     <button id="resetBtn" class="danger">Reimposta modello vuoto</button>
     <div class="year-input">
       <label for="yearField">Anno:</label>
@@ -705,6 +723,39 @@
     <button id="importBackupBtn">Importa backup completo (JSON)</button>
     <input type="file" id="importBackupFile" accept=".json" style="display:none">
     <span style="color:var(--muted); font-size:11.5px;">I dati sono salvati nel browser (localStorage) e non si spostano da soli tra domini diversi. Il backup contiene TUTTI i dati (tutte le aziende, piano dei conti, commesse, fornitori, monte ore...): usalo per trasferirli, ad esempio dal browser dove lavoravi prima al sito pubblicato online.</span>
+  </div>
+
+  <div id="odooModalOverlay" class="odoo-modal-overlay" style="display:none;">
+    <div class="odoo-modal">
+      <h2 style="margin-top:0;">Importa da Odoo</h2>
+      <p class="panel-hint">Il bridge locale (vedi LEGGIMI.md) deve essere avviato sul tuo computer prima di caricare i dati. I valori verranno importati nell'azienda attualmente selezionata («<span id="odooCompanyName"></span>»).</p>
+      <div class="odoo-modal-row">
+        <label for="odooBridgeUrl">Indirizzo bridge:</label>
+        <input type="text" id="odooBridgeUrl" value="http://localhost:5001">
+        <label for="odooYearField">Anno:</label>
+        <input type="text" id="odooYearField" value="2026" style="width:70px;">
+        <label for="odooCompanySelect">Azienda Odoo:</label>
+        <select id="odooCompanySelect" style="min-width:160px;"><option value="">(tutte)</option></select>
+        <button id="odooLoadBtn">Carica da Odoo</button>
+      </div>
+      <div id="odooStatusMsg" style="margin:10px 0; font-size:13px; color:var(--muted);"></div>
+      <div id="odooTableWrap" style="display:none; max-height:50vh; overflow-y:auto; border:1px solid var(--border); border-radius:8px;">
+        <table style="width:100%; border-collapse:collapse; font-size:13px;">
+          <thead>
+            <tr style="background:#fafbfc;">
+              <th style="text-align:left; padding:8px;">Conto Odoo</th>
+              <th style="text-align:right; padding:8px;">Totale anno</th>
+              <th style="text-align:left; padding:8px;">Importa come</th>
+            </tr>
+          </thead>
+          <tbody id="odooAccountsBody"></tbody>
+        </table>
+      </div>
+      <div class="odoo-modal-actions">
+        <button id="odooImportConfirmBtn" disabled>Importa i conti selezionati</button>
+        <button id="odooModalCloseBtn" class="danger">Chiudi</button>
+      </div>
+    </div>
   </div>
 
   <div id="printHeader" class="print-header-block">Conto Economico Mensile<div class="print-sub" id="printHeaderSub"></div></div>
@@ -6365,6 +6416,187 @@ populatePeriodSelects();
 populateCommessaSummaryPeriodSelects();
 populateDipendentiPeriodSelects();
 render();
+
+// ---- Importa da Odoo: dialogo che carica i movimenti contabili dal bridge locale
+// (odoo_bridge.py) e li fa mappare/importare nell'azienda corrente. ----
+
+const ODOO_SECTION_OPTIONS = [
+  { id: 'ricavi',    label: 'Ricavi' },
+  { id: 'costi_dir', label: 'Costi diretti' },
+  { id: 'costi_ind', label: 'Costi indiretti' },
+  { id: 'oneri',     label: 'Oneri diversi e finanziari' },
+  { id: 'ignora',    label: '(non importare)' },
+];
+
+let odooLoadedAccounts = [];
+let odooRowSelections = {}; // account_id -> sectionId scelto dall'utente
+
+function odooDefaultSection(internalGroup){
+  return internalGroup === 'income' ? 'ricavi' : 'costi_ind';
+}
+
+function odooOpenModal(){
+  document.getElementById('odooCompanyName').textContent = getCurrentCompany().name || '';
+  document.getElementById('odooYearField').value = document.getElementById('yearField').value || '2026';
+  document.getElementById('odooStatusMsg').textContent = '';
+  document.getElementById('odooTableWrap').style.display = 'none';
+  document.getElementById('odooAccountsBody').innerHTML = '';
+  document.getElementById('odooImportConfirmBtn').disabled = true;
+  odooLoadedAccounts = [];
+  document.getElementById('odooModalOverlay').style.display = 'flex';
+  odooLoadCompanies();
+}
+
+async function odooLoadCompanies(){
+  const bridgeUrl = document.getElementById('odooBridgeUrl').value.replace(/\/$/, '');
+  const sel = document.getElementById('odooCompanySelect');
+  const previousValue = sel.value;
+  try{
+    const resp = await fetch(bridgeUrl + '/api/companies');
+    const json = await resp.json();
+    if(!json.ok) return; // silenzioso: si può comunque usare "(tutte)" o riprovare col pulsante "Carica da Odoo"
+    sel.innerHTML = '<option value="">(tutte)</option>';
+    (json.companies || []).forEach(c=>{
+      const o = document.createElement('option');
+      o.value = c.id; o.textContent = c.name;
+      sel.appendChild(o);
+    });
+    if(previousValue) sel.value = previousValue;
+  }catch(err){
+    // il bridge potrebbe non essere ancora avviato: l'utente lo scoprirà cliccando "Carica da Odoo"
+  }
+}
+
+function odooCloseModal(){
+  document.getElementById('odooModalOverlay').style.display = 'none';
+}
+
+function odooRenderAccountsTable(accounts){
+  const tbody = document.getElementById('odooAccountsBody');
+  tbody.innerHTML = '';
+  odooRowSelections = {};
+  accounts.forEach(acc=>{
+    odooRowSelections[acc.account_id] = odooDefaultSection(acc.internal_group);
+
+    const tr = document.createElement('tr');
+    tr.style.borderTop = '1px solid var(--border)';
+
+    const tdName = document.createElement('td');
+    tdName.style.padding = '6px 8px';
+    tdName.textContent = (acc.code ? acc.code + ' – ' : '') + acc.name;
+    tr.appendChild(tdName);
+
+    const tdTot = document.createElement('td');
+    tdTot.style.padding = '6px 8px';
+    tdTot.style.textAlign = 'right';
+    const totale = acc.months.reduce((a,b)=>a+b, 0);
+    tdTot.textContent = totale.toLocaleString('it-IT', { minimumFractionDigits:2, maximumFractionDigits:2 });
+    tr.appendChild(tdTot);
+
+    const tdSel = document.createElement('td');
+    tdSel.style.padding = '6px 8px';
+    tdSel.style.whiteSpace = 'nowrap';
+    const btnGroup = document.createElement('div');
+    btnGroup.style.display = 'flex';
+    btnGroup.style.gap = '4px';
+    btnGroup.style.flexWrap = 'wrap';
+
+    ODOO_SECTION_OPTIONS.forEach(opt=>{
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = opt.label;
+      b.style.fontSize = '11.5px';
+      b.style.padding = '4px 7px';
+      b.style.borderRadius = '5px';
+      b.style.border = '1px solid var(--border)';
+      b.style.cursor = 'pointer';
+      const setActiveStyle = ()=>{
+        const isActive = odooRowSelections[acc.account_id] === opt.id;
+        b.style.background = isActive ? 'var(--accent)' : 'var(--panel)';
+        b.style.color = isActive ? '#fff' : 'var(--text)';
+        b.style.borderColor = isActive ? 'var(--accent)' : 'var(--border)';
+      };
+      setActiveStyle();
+      b.addEventListener('click', ()=>{
+        odooRowSelections[acc.account_id] = opt.id;
+        Array.from(btnGroup.children).forEach((child, i)=>{
+          const childOpt = ODOO_SECTION_OPTIONS[i];
+          const isActive = odooRowSelections[acc.account_id] === childOpt.id;
+          child.style.background = isActive ? 'var(--accent)' : 'var(--panel)';
+          child.style.color = isActive ? '#fff' : 'var(--text)';
+          child.style.borderColor = isActive ? 'var(--accent)' : 'var(--border)';
+        });
+      });
+      btnGroup.appendChild(b);
+    });
+    tdSel.appendChild(btnGroup);
+    tr.appendChild(tdSel);
+
+    tbody.appendChild(tr);
+  });
+}
+
+document.getElementById('importOdooBtn').addEventListener('click', odooOpenModal);
+document.getElementById('odooModalCloseBtn').addEventListener('click', odooCloseModal);
+
+document.getElementById('odooLoadBtn').addEventListener('click', async ()=>{
+  const statusEl = document.getElementById('odooStatusMsg');
+  const bridgeUrl = document.getElementById('odooBridgeUrl').value.replace(/\/$/, '');
+  const anno = document.getElementById('odooYearField').value.trim();
+  const companyId = document.getElementById('odooCompanySelect').value;
+  statusEl.textContent = 'Connessione al bridge in corso...';
+  document.getElementById('odooTableWrap').style.display = 'none';
+  document.getElementById('odooImportConfirmBtn').disabled = true;
+  try{
+    let url = bridgeUrl + '/api/movimenti?anno=' + encodeURIComponent(anno);
+    if(companyId) url += '&company_id=' + encodeURIComponent(companyId);
+    const resp = await fetch(url);
+    const json = await resp.json();
+    if(!json.ok){
+      statusEl.textContent = 'Errore: ' + json.error;
+      return;
+    }
+    odooLoadedAccounts = json.accounts || [];
+    if(odooLoadedAccounts.length === 0){
+      statusEl.textContent = 'Nessuna registrazione contabile trovata per l\'anno ' + anno + '.';
+      return;
+    }
+    statusEl.textContent = odooLoadedAccounts.length + ' conti caricati da Odoo per l\'anno ' + anno + '. Controlla la sezione proposta per ciascuno, poi importa.';
+    odooRenderAccountsTable(odooLoadedAccounts);
+    document.getElementById('odooTableWrap').style.display = 'block';
+    document.getElementById('odooImportConfirmBtn').disabled = false;
+  }catch(err){
+    statusEl.textContent = 'Impossibile contattare il bridge locale su ' + bridgeUrl + '. Verifica che odoo_bridge.py sia avviato (vedi LEGGIMI.md). Dettaglio: ' + err.message;
+  }
+});
+
+function odooUpsertRow(sectionId, name, code, months){
+  let acc = store.chartOfAccounts.find(a=> a.category === sectionId && a.name === name);
+  if(!acc){
+    acc = { id: makeId(), name, category: sectionId, code: nextAccountCode() };
+    store.chartOfAccounts.push(acc);
+  }
+  let row = data[sectionId].find(r=> r.accountId === acc.id);
+  if(!row){
+    row = { accountId: acc.id, values: Array(MONTHS).fill(0) };
+    data[sectionId].push(row);
+  }
+  row.values = months.slice(0, MONTHS);
+}
+
+document.getElementById('odooImportConfirmBtn').addEventListener('click', ()=>{
+  let imported = 0;
+  odooLoadedAccounts.forEach(acc=>{
+    const sectionId = odooRowSelections[acc.account_id];
+    if(!sectionId || sectionId === 'ignora') return;
+    odooUpsertRow(sectionId, acc.name, acc.code, acc.months);
+    imported++;
+  });
+  saveData();
+  render();
+  odooCloseModal();
+  alert('Importazione da Odoo completata: ' + imported + ' conti aggiornati per "' + getCurrentCompany().name + '".');
+});
 </script>
 
 </body>
