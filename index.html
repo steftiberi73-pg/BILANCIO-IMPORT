@@ -5286,6 +5286,19 @@ function buildSpostamentoEntryRow(s, idx){
       : (MONTH_NAMES[s.fromMonth] + ' → ' + MONTH_NAMES[s.toMonth]);
     row.appendChild(info);
 
+    // duplica
+    const dupBtn = document.createElement('button');
+    dupBtn.className = 'dup-riparti';
+    dupBtn.title = 'Duplica questo spostamento';
+    dupBtn.textContent = '⧉';
+    dupBtn.addEventListener('click', ()=>{
+      const copy = Object.assign({}, data.spostamenti[idx], { id: makeId() });
+      data.spostamenti.splice(idx+1, 0, copy);
+      saveData();
+      render();
+    });
+    row.appendChild(dupBtn);
+
     // elimina
     const delBtn = document.createElement('button');
     delBtn.className = 'del-riparti';
