@@ -1562,6 +1562,12 @@ const monteOreRowCollapsed = {};
 // omonima): di default tutti chiusi, si aprono singolarmente al click sull'intestazione
 // (o tutti durante una ricerca attiva). Chiave: nome dipendente normalizzato.
 const monteOreDipendenteCollapsed = {};
+// Stato di espansione dei gruppi per conto nella lista "Previsionale": di default tutti chiusi,
+// si aprono singolarmente al click sull'intestazione (o tutti durante una ricerca attiva).
+const previsionaleAccountCollapsed = {};
+// Stato di espansione dei sotto-gruppi per "Descrizione" dentro ciascun conto, in "Previsionale".
+// Chiave: accountId + '::' + descrizione (normalizzata). Stesso comportamento del conto.
+const previsionaleDescCollapsed = {};
 const spostamentiAccountCollapsed = {};
 
 function matchesSearch(fields, query){
@@ -4809,8 +4815,80 @@ function renderPrevisionaleList(){
     list.appendChild(empty);
   }
 
+  // Raggruppa le voci per conto (nell'ordine sezione/piano dei conti) e poi per descrizione,
+  // come già avviene in "Spese raggruppate", così le voci simili compaiono vicine invece che
+  // sparse in ordine di inserimento. Ogni gruppo è chiuso di default e si apre al click sulla
+  // sua intestazione (o automaticamente durante una ricerca attiva).
+  const usedIds = new Set();
+  SECTIONS.filter(s=>s.kind==='accounts').forEach(sec=>{
+    accountsByCategory(sec.id).forEach(acc=>{
+      const entries = [];
+      data.previsionali.forEach((p, idx)=>{
+        if(p.accountId !== acc.id) return;
+        if(!matchP(p)) return;
+        entries.push({ p, idx });
+      });
+      if(entries.length === 0) return;
+      usedIds.add(acc.id);
+      const total = entries.reduce((sum, {p})=> sum + (parseFloat(p.amount) || 0), 0);
+      list.appendChild(buildAccountGroupHeader(previsionaleAccountCollapsed, acc.id, acc.name, entries.length, q, renderPrevisionaleList, false, total));
+      if(q || previsionaleAccountCollapsed[acc.id] === false){
+        appendPrevisionaleEntriesByDescrizione(list, acc.id, entries, q);
+      }
+    });
+  });
+
+  // voci orfane, il cui conto non esiste più nel piano dei conti attuale
+  const orphan = [];
   data.previsionali.forEach((p, idx)=>{
+    if(usedIds.has(p.accountId)) return;
+    if(getAccountById(p.accountId)) return;
     if(!matchP(p)) return;
+    orphan.push({ p, idx });
+  });
+  if(orphan.length){
+    const total = orphan.reduce((sum, {p})=> sum + (parseFloat(p.amount) || 0), 0);
+    list.appendChild(buildAccountGroupHeader(previsionaleAccountCollapsed, '__orphan__', '(conto eliminato)', orphan.length, q, renderPrevisionaleList, false, total));
+    if(q || previsionaleAccountCollapsed['__orphan__'] === false){
+      appendPrevisionaleEntriesByDescrizione(list, '__orphan__', orphan, q);
+    }
+  }
+}
+
+// Dentro un gruppo per conto già espanso, raggruppa ulteriormente le voci previsionali in base
+// al testo del campo "Descrizione" (sotto-raggruppamento), con la stessa intestazione apri/chiudi,
+// chiusa di default e aperta automaticamente durante una ricerca attiva. Voci senza testo
+// finiscono tutte insieme in un gruppo "(senza descrizione)", mostrato per ultimo.
+function appendPrevisionaleEntriesByDescrizione(list, accountKey, entries, activeQuery){
+  const groups = [];
+  const groupByKey = {};
+  entries.forEach(({p, idx})=>{
+    const raw = (p.descrizione || '').trim();
+    const key = raw ? raw.toLowerCase() : '__no_desc__';
+    let g = groupByKey[key];
+    if(!g){
+      g = { key, label: raw || '(senza descrizione)', items: [] };
+      groupByKey[key] = g;
+      groups.push(g);
+    }
+    g.items.push({ p, idx });
+  });
+  groups.sort((a,b)=>{
+    if(a.key === '__no_desc__') return 1;
+    if(b.key === '__no_desc__') return -1;
+    return a.label.localeCompare(b.label, 'it');
+  });
+  groups.forEach(g=>{
+    const subKey = accountKey + '::' + g.key;
+    const total = g.items.reduce((sum, {p})=> sum + (parseFloat(p.amount) || 0), 0);
+    list.appendChild(buildAccountGroupHeader(previsionaleDescCollapsed, subKey, g.label, g.items.length, activeQuery, renderPrevisionaleList, true, total));
+    if(activeQuery || previsionaleDescCollapsed[subKey] === false){
+      g.items.forEach(({p, idx})=> list.appendChild(buildPrevisionaleEntryRow(p, idx)));
+    }
+  });
+}
+
+function buildPrevisionaleEntryRow(p, idx){
     const row = document.createElement('div');
     row.className = 'riparti-item';
 
@@ -4974,8 +5052,7 @@ function renderPrevisionaleList(){
     });
     row.appendChild(delBtn);
 
-    list.appendChild(row);
-  });
+    return row;
 }
 
 function renderPrevisionalePivot(){
