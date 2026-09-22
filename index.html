@@ -910,7 +910,7 @@
 
   <div class="panel">
     <h2>Spostamenti</h2>
-    <div class="panel-hint">Sposta un importo già inserito da un mese ad altri mesi per lo stesso conto: scegliendo conto e mese di origine viene proposto automaticamente l'importo già presente in quella riga. Scegli poi il tipo: "A un mese" sposta l'intero importo in un solo mese di destinazione; "Ripartito su più mesi" lo ripartisce in quote uguali su un numero di mesi consecutivi a partire dal mese scelto (utile al posto di "Importi da ripartire" quando l'importo riguarda già un conto specifico). Il totale annuo del conto non cambia, solo la sua distribuzione mensile.</div>
+    <div class="panel-hint">Sposta un importo già inserito da un mese ad altri mesi per lo stesso conto: scegliendo conto e mese di origine viene proposto automaticamente l'importo già presente in quella riga. Scegli poi il tipo: "A un mese" sposta l'intero importo in un solo mese di destinazione; "Ripartito su più mesi" lo ripartisce in quote uguali su un numero di mesi consecutivi a partire dal mese scelto (utile al posto di "Importi da ripartire" quando l'importo riguarda già un conto specifico); "Parcheggio" storna l'importo togliendolo dal Conto Economico dell'anno corrente, senza rimetterlo in nessun altro mese — utile per i costi/ricavi di competenza di un altro esercizio, che così non pesano più sul risultato di quest'anno mantenendo comunque una voce visibile qui per ricordare cosa è stato stornato. Con "A un mese"/"Ripartito" il totale annuo del conto non cambia, solo la sua distribuzione mensile; con "Parcheggio" invece il totale annuo diminuisce dell'importo stornato.</div>
     <input type="text" id="searchSpostamenti" class="search-input" placeholder="Cerca per conto o mese...">
     <div id="spostamentiList"></div>
     <button class="panel-add-btn" id="addSpostamentoBtn">+ Aggiungi spostamento</button>
@@ -1677,10 +1677,16 @@ function previsionaliAccountsForCategory(category){
     .map(a=> ({ accountId: a.id, monthly: map[a.id] }));
 }
 
-// Sposta un importo dal mese di origine per lo stesso conto. Due modalità:
+// Sposta un importo dal mese di origine per lo stesso conto. Tre modalità:
 // - "singolo" (default, come prima): -importo nel mese origine, +importo in un unico mese destinazione.
 // - "ripartito": -importo nel mese origine, ripartito in quote uguali su "numMonths" mesi consecutivi
 //   a partire dal mese destinazione (stessa logica di "Importi da ripartire", ma legata a un conto).
+// - "parcheggio": -importo nel mese origine e basta, l'importo NON viene riaggiunto in nessun mese
+//   dello stesso conto: è uno storno vero e proprio, usato per togliere dal Conto Economico
+//   dell'anno corrente i costi/ricavi di competenza di un altro esercizio. La voce resta
+//   comunque visibile nell'elenco "Spostamenti" (con l'etichetta "parcheggiato"), così si tiene
+//   traccia di cosa e quanto è stato stornato, anche se l'importo non compare più da nessuna parte
+//   nel Conto Economico.
 function computeSpostamentoMonthly(s){
   const monthly = Array(MONTHS).fill(0);
   const from = Math.min(Math.max(parseInt(s.fromMonth) || 0, 0), MONTHS-1);
@@ -1694,6 +1700,8 @@ function computeSpostamentoMonthly(s){
       const m = startMonth + i;
       if(m>=0 && m<MONTHS) monthly[m] += quota;
     }
+  } else if(s.tipo === 'parcheggio'){
+    // storno: l'importo esce dal Conto Economico e non viene riaccreditato da nessuna parte
   } else {
     const to = Math.min(Math.max(parseInt(s.toMonth) || 0, 0), MONTHS-1);
     monthly[to] += amount;
@@ -5273,7 +5281,7 @@ function buildSpostamentoEntryRow(s, idx){
     labelTipo.className = 'field-label';
     labelTipo.textContent = 'Tipo';
     const selectTipo = document.createElement('select');
-    [ { id:'singolo', label:'A un mese' }, { id:'ripartito', label:'Ripartito su più mesi' } ].forEach(opt=>{
+    [ { id:'singolo', label:'A un mese' }, { id:'ripartito', label:'Ripartito su più mesi' }, { id:'parcheggio', label:'Parcheggio (storno, fuori dal Conto Economico)' } ].forEach(opt=>{
       const o = document.createElement('option');
       o.value = opt.id; o.textContent = opt.label;
       if((s.tipo||'singolo') === opt.id) o.selected = true;
@@ -5292,29 +5300,33 @@ function buildSpostamentoEntryRow(s, idx){
     row.appendChild(fieldTipo);
 
     const isRipartito = (s.tipo === 'ripartito');
+    const isParcheggio = (s.tipo === 'parcheggio');
 
-    // mese di destinazione (singolo) oppure mese di partenza della ripartizione
-    const fieldTo = document.createElement('div');
-    fieldTo.className = 'field';
-    const labelTo = document.createElement('span');
-    labelTo.className = 'field-label';
-    labelTo.textContent = isRipartito ? 'A partire da mese' : 'A mese';
-    const selectTo = document.createElement('select');
-    MONTH_NAMES.forEach((mName, mi)=>{
-      const o = document.createElement('option');
-      o.value = mi;
-      o.textContent = mName;
-      if(s.toMonth === mi) o.selected = true;
-      selectTo.appendChild(o);
-    });
-    selectTo.addEventListener('change', (e)=>{
-      data.spostamenti[idx].toMonth = parseInt(e.target.value);
-      saveData();
-      render();
-    });
-    fieldTo.appendChild(labelTo);
-    fieldTo.appendChild(selectTo);
-    row.appendChild(fieldTo);
+    // mese di destinazione (singolo) oppure mese di partenza della ripartizione: non serve per
+    // il tipo "parcheggio", che è solo uno storno senza un mese di destinazione nel Conto Economico
+    if(!isParcheggio){
+      const fieldTo = document.createElement('div');
+      fieldTo.className = 'field';
+      const labelTo = document.createElement('span');
+      labelTo.className = 'field-label';
+      labelTo.textContent = isRipartito ? 'A partire da mese' : 'A mese';
+      const selectTo = document.createElement('select');
+      MONTH_NAMES.forEach((mName, mi)=>{
+        const o = document.createElement('option');
+        o.value = mi;
+        o.textContent = mName;
+        if(s.toMonth === mi) o.selected = true;
+        selectTo.appendChild(o);
+      });
+      selectTo.addEventListener('change', (e)=>{
+        data.spostamenti[idx].toMonth = parseInt(e.target.value);
+        saveData();
+        render();
+      });
+      fieldTo.appendChild(labelTo);
+      fieldTo.appendChild(selectTo);
+      row.appendChild(fieldTo);
+    }
 
     // numero di mesi su cui ripartire (solo per il tipo "ripartito")
     if(isRipartito){
@@ -5371,10 +5383,17 @@ function buildSpostamentoEntryRow(s, idx){
     // info
     const info = document.createElement('div');
     info.className = 'quota-info';
-    info.textContent = isRipartito
-      ? (MONTH_NAMES[s.fromMonth] + ' → ripartito da ' + MONTH_NAMES[s.toMonth] + ' per ' + (s.numMonths||1) + ' mes' + ((s.numMonths||1)===1?'e':'i'))
-      : (MONTH_NAMES[s.fromMonth] + ' → ' + MONTH_NAMES[s.toMonth]);
+    if(isParcheggio){
+      info.textContent = MONTH_NAMES[s.fromMonth] + ' → stornato, parcheggiato fuori dal Conto Economico';
+      info.style.color = '#b45309';
+      info.style.fontWeight = '600';
+    } else {
+      info.textContent = isRipartito
+        ? (MONTH_NAMES[s.fromMonth] + ' → ripartito da ' + MONTH_NAMES[s.toMonth] + ' per ' + (s.numMonths||1) + ' mes' + ((s.numMonths||1)===1?'e':'i'))
+        : (MONTH_NAMES[s.fromMonth] + ' → ' + MONTH_NAMES[s.toMonth]);
+    }
     row.appendChild(info);
+    if(isParcheggio) row.style.background = '#fffbeb';
 
     // duplica
     const dupBtn = document.createElement('button');
