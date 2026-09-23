@@ -4449,7 +4449,8 @@ function renderSpeseList(){
       });
       if(entries.length === 0) return;
       usedIds.add(acc.id);
-      list.appendChild(buildAccountGroupHeader(speseAccountCollapsed, acc.id, acc.name, entries.length, q, renderSpeseList));
+      const total = entries.reduce((sum, {sp})=> sum + (parseFloat(sp.amount) || 0), 0);
+      list.appendChild(buildAccountGroupHeader(speseAccountCollapsed, acc.id, acc.name, entries.length, q, renderSpeseList, false, total));
       if(q || speseAccountCollapsed[acc.id] === false){
         appendSpeseEntriesByVoce(list, acc.id, entries, q);
       }
@@ -4465,7 +4466,8 @@ function renderSpeseList(){
     orphan.push({ sp, idx });
   });
   if(orphan.length){
-    list.appendChild(buildAccountGroupHeader(speseAccountCollapsed, '__orphan__', '(conto eliminato)', orphan.length, q, renderSpeseList));
+    const orphanTotal = orphan.reduce((sum, {sp})=> sum + (parseFloat(sp.amount) || 0), 0);
+    list.appendChild(buildAccountGroupHeader(speseAccountCollapsed, '__orphan__', '(conto eliminato)', orphan.length, q, renderSpeseList, false, orphanTotal));
     if(q || speseAccountCollapsed['__orphan__'] === false){
       appendSpeseEntriesByVoce(list, '__orphan__', orphan, q);
     }
