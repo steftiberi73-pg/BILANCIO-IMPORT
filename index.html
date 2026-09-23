@@ -940,6 +940,13 @@
     <button id="exportByCodeCsvBtn">Esporta CSV</button>
     <button id="exportByCodeXlsBtn">Esporta Excel</button>
     <button id="exportByCodePdfBtn">Esporta PDF</button>
+    <div class="period-input">
+      <label for="saldiBudgetFromField">Periodo saldi per Budget:</label>
+      <select id="saldiBudgetFromField"><option value="0">Gen</option><option value="1">Feb</option><option value="2">Mar</option><option value="3">Apr</option><option value="4">Mag</option><option value="5">Giu</option><option value="6">Lug</option><option value="7">Ago</option><option value="8">Set</option><option value="9">Ott</option><option value="10">Nov</option><option value="11">Dic</option></select>
+      <span>–</span>
+      <select id="saldiBudgetToField"><option value="0">Gen</option><option value="1">Feb</option><option value="2">Mar</option><option value="3">Apr</option><option value="4">Mag</option><option value="5">Giu</option><option value="6">Lug</option><option value="7">Ago</option><option value="8">Set</option><option value="9">Ott</option><option value="10">Nov</option><option value="11" selected>Dic</option></select>
+    </div>
+    <button id="exportSaldiBudgetBtn" title="Esporta i saldi mensili di questa azienda (per il periodo scelto) in un file da importare nel Budget Previsionale, abbinando i conti con lo stesso codice">🔗 Esporta saldi per Budget</button>
     <label class="hide-months-toggle">
       <input type="checkbox" id="hideMonthsToggle">
       Mostra solo il totale
@@ -6011,6 +6018,66 @@ document.getElementById('exportByCodeXlsBtn').addEventListener('click', ()=>{
   const sheetName = 'CE sintetico';
   XLSX.utils.book_append_sheet(wb, ws, sheetName);
   XLSX.writeFile(wb, exportByCodeFileBaseName() + '.xlsx');
+});
+
+// ---- Esporta saldi per il Budget Previsionale: un JSON con il saldo mensile di ogni
+// conto (identificato dal suo codice) dell'azienda corrente, da importare nell'app
+// "Budget Previsionale" per riportare i consuntivi sui conti con lo stesso codice. ----
+function getSaldiBudgetPeriod(){
+  const fromSel = document.getElementById('saldiBudgetFromField');
+  const toSel = document.getElementById('saldiBudgetToField');
+  let start = parseInt(fromSel && fromSel.value) || 0;
+  let end = parseInt(toSel && toSel.value);
+  if(isNaN(end)) end = MONTHS-1;
+  if(start > end){ const tmp = start; start = end; end = tmp; }
+  return { start, end };
+}
+
+// I mesi fuori dal periodo scelto vengono impostati a null (anziché 0), così l'import nel
+// Budget Previsionale può distinguere "nessun dato per questo mese" da "saldo pari a zero"
+// e aggiornare solo i mesi effettivamente esportati, lasciando invariati gli altri.
+function buildSaldiPerBudgetPayload(){
+  const byCode = computeByCode();
+  const period = getSaldiBudgetPeriod();
+  const saldi = {};
+  const senzaCodice = [];
+  SECTION_IDS.forEach(sectionId=>{
+    accountsByCategory(sectionId).forEach(acc=>{
+      const monthly = byCode.perAccount[acc.id];
+      if(!monthly) return; // conto non usato in questa azienda
+      const code = (acc.code || '').trim();
+      if(!code){ senzaCodice.push(acc.name); return; }
+      saldi[code] = monthly.map((v,i)=> (i>=period.start && i<=period.end) ? Math.round((parseFloat(v)||0) * 100) / 100 : null);
+    });
+  });
+  return {
+    tipo: 'saldi-conto-economico',
+    versione: 1,
+    azienda: data.name || 'Azienda',
+    anno: data.year || '',
+    periodoInizio: period.start,
+    periodoFine: period.end,
+    esportatoIl: new Date().toISOString(),
+    saldi,
+    contiSenzaCodice: senzaCodice
+  };
+}
+
+document.getElementById('exportSaldiBudgetBtn').addEventListener('click', ()=>{
+  const payload = buildSaldiPerBudgetPayload();
+  if(payload.contiSenzaCodice.length){
+    alert('Attenzione: i seguenti conti non hanno un codice assegnato e non saranno inclusi nel file (assegna un codice nel Piano dei Conti per poterli riportare sul Budget):\n- ' + payload.contiSenzaCodice.join('\n- '));
+  }
+  const nomeMese = m => (typeof MONTH_NAMES!=='undefined' && MONTH_NAMES[m]) ? MONTH_NAMES[m] : ('mese '+(m+1));
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type:'application/json;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const safeName = (data.name || 'azienda').replace(/[^a-z0-9]+/gi, '_');
+  const periodoLabel = nomeMese(payload.periodoInizio) + '-' + nomeMese(payload.periodoFine);
+  a.download = 'saldi_per_budget_' + safeName + '_' + (data.year || '') + '_' + periodoLabel + '.json';
+  a.click();
+  URL.revokeObjectURL(url);
 });
 
 document.getElementById('hideMonthsToggle').addEventListener('change', (e)=>{
