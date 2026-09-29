@@ -1314,6 +1314,11 @@ function ensureAccountCodes(chart){
 }
 
 const SECTION_IDS = ['ricavi','costi_dir','costi_ind','oneri'];
+// Valore speciale di data.currentCommessaId per la voce "Tutte le commesse" nel menu a tendina
+// di "Bilancio per commessa": non corrisponde a nessuna commessa reale, mostra invece il
+// bilancio aggregato di tutte le commesse (esclusa l'eventuale "commessa da ripartire", i cui
+// costi sono già interamente redistribuiti sulle altre, per non contarli due volte).
+const ALL_COMMESSE_ID = '__tutte_le_commesse__';
 
 function emptyCompany(name){
   return {
@@ -2282,6 +2287,53 @@ function computeCommessaTotals(commessaId, opts){
   return { perAccount, perAccountFornitori, perAccountMonteOre, perAccountMonteOreByDipendente, overheadQuota, sectionTotals, mol: molMonthly, risultato: risultatoMonthly };
 }
 
+// Bilancio aggregato di "Tutte le commesse" (usato dalla voce omonima nel menu a tendina di
+// "Bilancio per commessa"): somma i totali di ciascuna commessa (perAccount, i derivati da
+// Fornitori e da Ricavi monte ore, la quota di overhead ricevuta) su tutte le commesse TRANNE
+// l'eventuale "commessa da ripartire", i cui costi sono già interamente redistribuiti sulle
+// altre (computeCommessaTotals li include già come "quota ripartita") — includerla di nuovo
+// conterebbe quei costi due volte. Il totale complessivo così ottenuto coincide con quello della
+// riga "Totale complessivo" nel Riepilogo di tutte le commesse qui sopra.
+function computeCommessaTotalsAggregate(){
+  const ripId = data.ripartitriceCommessaId;
+  const altre = data.commesse.filter(c=> c.id !== ripId);
+
+  const perAccount = {};
+  const perAccountFornitori = {};
+  const perAccountMonteOre = {};
+  const perAccountMonteOreByDipendente = {};
+  const sectionTotals = {};
+  SECTION_IDS.forEach(sid=>{ sectionTotals[sid] = Array(MONTHS).fill(0); });
+  const overheadQuota = { costi_dir: Array(MONTHS).fill(0), costi_ind: Array(MONTHS).fill(0), oneri: Array(MONTHS).fill(0) };
+
+  function addInto(map, accId, monthly){
+    if(!map[accId]) map[accId] = Array(MONTHS).fill(0);
+    monthly.forEach((v,i)=>{ map[accId][i] += v; });
+  }
+
+  altre.forEach(c=>{
+    const t = computeCommessaTotals(c.id);
+    Object.keys(t.perAccount).forEach(accId=> addInto(perAccount, accId, t.perAccount[accId]));
+    Object.keys(t.perAccountFornitori).forEach(accId=> addInto(perAccountFornitori, accId, t.perAccountFornitori[accId]));
+    Object.keys(t.perAccountMonteOre).forEach(accId=> addInto(perAccountMonteOre, accId, t.perAccountMonteOre[accId]));
+    Object.keys(t.perAccountMonteOreByDipendente).forEach(accId=>{
+      if(!perAccountMonteOreByDipendente[accId]) perAccountMonteOreByDipendente[accId] = {};
+      Object.keys(t.perAccountMonteOreByDipendente[accId]).forEach(dip=>{
+        if(!perAccountMonteOreByDipendente[accId][dip]) perAccountMonteOreByDipendente[accId][dip] = Array(MONTHS).fill(0);
+        t.perAccountMonteOreByDipendente[accId][dip].forEach((v,i)=>{ perAccountMonteOreByDipendente[accId][dip][i] += v; });
+      });
+    });
+    SECTION_IDS.forEach(sid=>{ t.sectionTotals[sid].forEach((v,i)=>{ sectionTotals[sid][i] += v; }); });
+    if(t.overheadQuota){
+      ['costi_dir','costi_ind','oneri'].forEach(sid=>{ t.overheadQuota[sid].forEach((v,i)=>{ overheadQuota[sid][i] += v; }); });
+    }
+  });
+
+  const molMonthly = sectionTotals.ricavi.map((v,i)=> v - sectionTotals.costi_dir[i]);
+  const risultatoMonthly = molMonthly.map((v,i)=> v - sectionTotals.costi_ind[i] - sectionTotals.oneri[i]);
+  return { perAccount, perAccountFornitori, perAccountMonteOre, perAccountMonteOreByDipendente, overheadQuota, sectionTotals, mol: molMonthly, risultato: risultatoMonthly };
+}
+
 // Ripartisce, mese per mese, i Costi diretti (compresi i Costi di produzione, incluse le
 // eventuali quote da Fornitori), i Costi indiretti e gli Oneri diversi e finanziari inseriti
 // sulla "commessa da ripartire" (data.ripartitriceCommessaId) su tutte le altre commesse, in
@@ -2402,6 +2454,13 @@ function renderCommessaSelect(){
   const sel = document.getElementById('commessaSelect');
   if(!sel) return;
   sel.innerHTML = '';
+  if(data.commesse.length > 1){
+    const optAll = document.createElement('option');
+    optAll.value = ALL_COMMESSE_ID;
+    optAll.textContent = 'Tutte le commesse';
+    if(data.currentCommessaId === ALL_COMMESSE_ID) optAll.selected = true;
+    sel.appendChild(optAll);
+  }
   data.commesse.forEach(c=>{
     const o = document.createElement('option');
     o.value = c.id;
@@ -2431,6 +2490,13 @@ function renderRipartitriceSelect(){
 function renderCommessaDescrizione(){
   const field = document.getElementById('commessaDescrizione');
   if(!field) return;
+  if(data.currentCommessaId === ALL_COMMESSE_ID){
+    field.value = '';
+    field.disabled = true;
+    field.placeholder = 'Non disponibile per "Tutte le commesse"';
+    return;
+  }
+  field.placeholder = 'Note, dettagli, referente...';
   const commessa = getCurrentCommessa();
   field.value = commessa ? (commessa.descrizione || '') : '';
   field.disabled = !commessa;
@@ -2443,6 +2509,11 @@ function renderCommessaTable(){
   tbody.innerHTML = '';
 
   const printSub = document.getElementById('printHeaderCommessaSub');
+
+  if(data.currentCommessaId === ALL_COMMESSE_ID){
+    renderCommessaTableAggregate(tbody, printSub);
+    return;
+  }
 
   const commessa = getCurrentCommessa();
   if(!commessa){
@@ -2631,6 +2702,136 @@ function renderCommessaTable(){
       }
       trAdd.appendChild(tdAdd);
       tbody.appendChild(trAdd);
+
+      const trTot = document.createElement('tr');
+      trTot.className = 'total-row ' + section.cls;
+      const tdTotLabel = document.createElement('td');
+      tdTotLabel.textContent = 'Totale ' + section.label;
+      trTot.appendChild(tdTotLabel);
+      let grand = 0;
+      totals.sectionTotals[section.id].forEach(v=>{
+        const td = document.createElement('td');
+        td.textContent = fmt(v);
+        if(v<0) td.classList.add('neg');
+        trTot.appendChild(td);
+        grand += v;
+      });
+      const tdGrand = document.createElement('td');
+      tdGrand.className = 'total-col';
+      tdGrand.textContent = fmt(grand);
+      if(grand<0) tdGrand.classList.add('neg');
+      trTot.appendChild(tdGrand);
+      tbody.appendChild(trTot);
+
+    } else {
+      const trh = document.createElement('tr');
+      trh.className = 'result-row ' + section.cls;
+      const tdLabel = document.createElement('td');
+      tdLabel.textContent = section.label;
+      trh.appendChild(tdLabel);
+      const monthly = section.id === 'mol' ? totals.mol : totals.risultato;
+      let grand = 0;
+      monthly.forEach(v=>{
+        const td = document.createElement('td');
+        td.textContent = fmt(v);
+        if(v<0) td.classList.add('neg');
+        trh.appendChild(td);
+        grand += v;
+      });
+      const tdGrand = document.createElement('td');
+      tdGrand.className = 'total-col';
+      tdGrand.textContent = fmt(grand);
+      if(grand<0) tdGrand.classList.add('neg');
+      trh.appendChild(tdGrand);
+      tbody.appendChild(trh);
+    }
+  });
+}
+
+// Riga di sola lettura (nessun input, nessun pulsante elimina) per un conto nella vista
+// aggregata "Tutte le commesse": mostra nome conto, valori mensili ed eventuale badge.
+function buildReadOnlyAccountRow(name, monthly, sectionCls, badge){
+  const tr = document.createElement('tr');
+  tr.className = 'account-row ' + sectionCls;
+  const tdName = document.createElement('td');
+  if(badge){
+    tdName.innerHTML = escapeHtml(name) + ' <span class="badge">' + escapeHtml(badge) + '</span>';
+  } else {
+    tdName.textContent = name;
+  }
+  tr.appendChild(tdName);
+  let rowTotal = 0;
+  monthly.forEach(v=>{
+    const td = document.createElement('td');
+    td.textContent = fmt(v);
+    tr.appendChild(td);
+    rowTotal += v;
+  });
+  const tdTotal = document.createElement('td');
+  tdTotal.className = 'row-total total-col';
+  tdTotal.textContent = fmt(rowTotal);
+  tr.appendChild(tdTotal);
+  return tr;
+}
+
+// Vista aggregata "Tutte le commesse" in "Bilancio per commessa": somma di sola lettura di
+// tutte le commesse (tranne l'eventuale "commessa da ripartire", vedi computeCommessaTotalsAggregate).
+// Niente input editabili né riga "+ Aggiungi conto": per modificare i singoli importi si torna a
+// selezionare la commessa specifica dal menu a tendina qui sopra.
+function renderCommessaTableAggregate(tbody, printSub){
+  if(printSub) printSub.textContent = (data.name||'') + ' — Tutte le commesse';
+
+  const ripId = data.ripartitriceCommessaId;
+  const altre = data.commesse.filter(c=> c.id !== ripId);
+  if(altre.length === 0){
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = MONTHS + 2;
+    td.className = 'no-accounts-hint';
+    td.textContent = 'Nessuna commessa da aggregare (a parte l\'eventuale "commessa da ripartire", esclusa perché i suoi costi sono già redistribuiti sulle altre).';
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    return;
+  }
+
+  const totals = computeCommessaTotalsAggregate();
+  const ripName = ripId ? getCommessaNameById(ripId) : '';
+
+  SECTIONS.forEach(section=>{
+    if(section.kind === 'accounts'){
+      const trh = document.createElement('tr');
+      trh.className = 'section-header ' + section.cls;
+      const tdLabel = document.createElement('td');
+      tdLabel.colSpan = MONTHS + 2;
+      tdLabel.textContent = section.label;
+      trh.appendChild(tdLabel);
+      tbody.appendChild(trh);
+
+      Object.keys(totals.perAccount).forEach(accId=>{
+        const acc = getAccountById(accId);
+        if(!acc || acc.category !== section.id) return;
+        tbody.appendChild(buildReadOnlyAccountRow(getAccountName(accId), totals.perAccount[accId], section.cls));
+      });
+
+      Object.keys(totals.perAccountFornitori).forEach(accId=>{
+        const acc = getAccountById(accId);
+        if(!acc || acc.category !== section.id) return;
+        tbody.appendChild(buildReadOnlyAccountRow(getAccountName(accId), totals.perAccountFornitori[accId], section.cls, 'da dipendente'));
+      });
+
+      Object.keys(totals.perAccountMonteOre).forEach(accId=>{
+        const acc = getAccountById(accId);
+        if(!acc || acc.category !== section.id) return;
+        tbody.appendChild(buildReadOnlyAccountRow(getAccountName(accId), totals.perAccountMonteOre[accId], section.cls, 'da monte ore'));
+      });
+
+      if((section.id === 'costi_dir' || section.id === 'costi_ind' || section.id === 'oneri') && ripId){
+        const monthly = totals.overheadQuota[section.id];
+        const hasValue = monthly.some(v=> Math.abs(v) > 0.0001);
+        if(hasValue){
+          tbody.appendChild(buildReadOnlyAccountRow('Quota ripartita da "' + ripName + '"', monthly, section.cls, 'ripartizione ricavi'));
+        }
+      }
 
       const trTot = document.createElement('tr');
       trTot.className = 'total-row ' + section.cls;
@@ -5712,6 +5913,7 @@ document.getElementById('addCommessaBtn').addEventListener('click', ()=>{
 });
 
 document.getElementById('renameCommessaBtn').addEventListener('click', ()=>{
+  if(data.currentCommessaId === ALL_COMMESSE_ID){ alert('Seleziona prima una commessa specifica dal menu a tendina (non "Tutte le commesse").'); return; }
   const commessa = getCurrentCommessa();
   if(!commessa){ alert('Crea prima una commessa.'); return; }
   const name = prompt('Nuovo nome per "' + commessa.name + '":', commessa.name);
@@ -5727,6 +5929,7 @@ document.getElementById('renameCommessaBtn').addEventListener('click', ()=>{
 });
 
 document.getElementById('deleteCommessaBtn').addEventListener('click', ()=>{
+  if(data.currentCommessaId === ALL_COMMESSE_ID){ alert('Seleziona prima una commessa specifica dal menu a tendina (non "Tutte le commesse").'); return; }
   const commessa = getCurrentCommessa();
   if(!commessa){ alert('Nessuna commessa da eliminare.'); return; }
   if(confirm('Vuoi davvero eliminare la commessa "' + commessa.name + '" e tutte le ripartizioni, i fornitori e il monte ore ad essa assegnati? L\'operazione non è reversibile.')){
@@ -5750,6 +5953,7 @@ document.getElementById('ripartitriceSelect').addEventListener('change', (e)=>{
 });
 
 document.getElementById('commessaDescrizione').addEventListener('input', (e)=>{
+  if(data.currentCommessaId === ALL_COMMESSE_ID) return;
   const commessa = getCurrentCommessa();
   if(!commessa) return;
   commessa.descrizione = e.target.value;
@@ -6201,6 +6405,52 @@ document.getElementById('exportPrevisionalePdfBtn').addEventListener('click', ()
 function buildCommessaReportRows(){
   const rows = [];
   rows.push(['Conto', ...MONTH_NAMES, 'Totale']);
+
+  if(data.currentCommessaId === ALL_COMMESSE_ID){
+    const ripId = data.ripartitriceCommessaId;
+    if(data.commesse.filter(c=> c.id !== ripId).length === 0) return rows;
+    const totals = computeCommessaTotalsAggregate();
+    const ripName = ripId ? getCommessaNameById(ripId) : '';
+
+    SECTIONS.forEach(section=>{
+      if(section.kind === 'accounts'){
+        rows.push([section.label, ...Array(MONTHS).fill(''), '']);
+
+        Object.keys(totals.perAccount).forEach(accId=>{
+          const acc = getAccountById(accId);
+          if(!acc || acc.category !== section.id) return;
+          const monthly = totals.perAccount[accId];
+          rows.push([getAccountName(accId), ...monthly, monthly.reduce((a,b)=>a+b,0)]);
+        });
+        Object.keys(totals.perAccountFornitori).forEach(accId=>{
+          const acc = getAccountById(accId);
+          if(!acc || acc.category !== section.id) return;
+          const monthly = totals.perAccountFornitori[accId];
+          rows.push([getAccountName(accId) + ' (da dipendente)', ...monthly, monthly.reduce((a,b)=>a+b,0)]);
+        });
+        Object.keys(totals.perAccountMonteOre).forEach(accId=>{
+          const acc = getAccountById(accId);
+          if(!acc || acc.category !== section.id) return;
+          const monthly = totals.perAccountMonteOre[accId];
+          rows.push([getAccountName(accId) + ' (da monte ore)', ...monthly, monthly.reduce((a,b)=>a+b,0)]);
+        });
+        if((section.id === 'costi_dir' || section.id === 'costi_ind' || section.id === 'oneri') && ripId){
+          const monthly = totals.overheadQuota[section.id];
+          if(monthly.some(v=> Math.abs(v) > 0.0001)){
+            rows.push(['Quota ripartita da "' + ripName + '"', ...monthly, monthly.reduce((a,b)=>a+b,0)]);
+          }
+        }
+        const sectMonthly = totals.sectionTotals[section.id];
+        rows.push(['Totale ' + section.label, ...sectMonthly, sectMonthly.reduce((a,b)=>a+b,0)]);
+      } else {
+        const monthly = section.id === 'mol' ? totals.mol : totals.risultato;
+        rows.push([section.label, ...monthly, monthly.reduce((a,b)=>a+b,0)]);
+      }
+    });
+
+    return rows;
+  }
+
   const commessa = getCurrentCommessa();
   if(!commessa) return rows;
   const totals = computeCommessaTotals(commessa.id);
@@ -6255,8 +6505,11 @@ function buildCommessaReportRows(){
 }
 
 function exportCommessaFileBaseName(){
-  const commessa = getCurrentCommessa();
   const safeName = (data.name || 'azienda').replace(/[^a-z0-9]+/gi, '_');
+  if(data.currentCommessaId === ALL_COMMESSE_ID){
+    return 'bilancio_tutte_le_commesse_' + safeName + '_' + (data.year || '');
+  }
+  const commessa = getCurrentCommessa();
   const safeCommessa = (commessa ? commessa.name : 'commessa').replace(/[^a-z0-9]+/gi, '_');
   return 'bilancio_commessa_' + safeCommessa + '_' + safeName + '_' + (data.year || '');
 }
