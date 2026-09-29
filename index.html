@@ -1568,6 +1568,11 @@ const previsionaleAccountCollapsed = {};
 // Stato di espansione dei sotto-gruppi per "Descrizione" dentro ciascun conto, in "Previsionale".
 // Chiave: accountId + '::' + descrizione (normalizzata). Stesso comportamento del conto.
 const previsionaleDescCollapsed = {};
+// Stato di espansione dei gruppi per dipendente nella lista "Fornitori" (in realtà voci di
+// costo per dipendente/collaboratore, il campo si chiama "fornitore" solo internamente): di
+// default tutti chiusi, si aprono singolarmente al click sull'intestazione (o tutti durante
+// una ricerca attiva). Chiave: nome dipendente normalizzato.
+const fornitoriDipendenteCollapsed = {};
 const spostamentiAccountCollapsed = {};
 
 function matchesSearch(fields, query){
@@ -3386,9 +3391,41 @@ function renderFornitoriList(){
     list.appendChild(empty);
   }
 
+  // Raggruppa le voci per dipendente (in ordine alfabetico), così le voci della stessa persona
+  // compaiono vicine invece che in ordine di inserimento, con il totale a fianco di ciascun
+  // gruppo. Ogni gruppo è chiuso di default e si apre al click sulla sua intestazione (o
+  // automaticamente durante una ricerca attiva).
+  const groups = [];
+  const groupByKey = {};
   data.fornitori.forEach((f, idx)=>{
     if(f.commessaId !== commessa.id) return;
     if(!matchF(f)) return;
+    const name = (f.fornitore || '').trim();
+    const key = name ? name.toLowerCase() : '__senza_nome__';
+    let g = groupByKey[key];
+    if(!g){
+      g = { key, label: name || '(senza nome)', items: [] };
+      groupByKey[key] = g;
+      groups.push(g);
+    }
+    g.items.push({ f, idx });
+  });
+  groups.sort((a,b)=>{
+    if(a.key === '__senza_nome__') return 1;
+    if(b.key === '__senza_nome__') return -1;
+    return a.label.localeCompare(b.label, 'it');
+  });
+
+  groups.forEach(g=>{
+    const total = g.items.reduce((sum, {f})=> sum + (parseFloat(f.importo) || 0), 0);
+    list.appendChild(buildAccountGroupHeader(fornitoriDipendenteCollapsed, g.key, g.label, g.items.length, q, renderFornitoriList, false, total));
+    if(q || fornitoriDipendenteCollapsed[g.key] === false){
+      g.items.forEach(({f, idx})=> list.appendChild(buildFornitoreEntryRow(f, idx, accountIds)));
+    }
+  });
+}
+
+function buildFornitoreEntryRow(f, idx, accountIds){
     const row = document.createElement('div');
     row.className = 'riparti-item';
 
@@ -3512,8 +3549,7 @@ function renderFornitoriList(){
     });
     row.appendChild(delBtn);
 
-    list.appendChild(row);
-  });
+    return row;
 }
 
 function renderFornitoriPivot(){
