@@ -1014,6 +1014,18 @@
       <span style="color:var(--muted); font-size:11.5px;">Esporta il riepilogo di tutte le commesse qui sotto.</span>
     </div>
 
+    <div class="toolbar" style="margin-top:6px;">
+      <label for="commessaBreakdownPickerCommessa" style="font-size:12.5px;">Vedi dettaglio conti di:</label>
+      <select id="commessaBreakdownPickerCommessa"></select>
+      <select id="commessaBreakdownPickerSezione">
+        <option value="ricavi">Ricavi</option>
+        <option value="costi_dir">Costi diretti</option>
+        <option value="costi_ind">Costi indiretti</option>
+        <option value="oneri">Oneri</option>
+      </select>
+      <button id="commessaBreakdownPickerBtn">Mostra dettaglio</button>
+    </div>
+
     <div id="printHeaderCommessaRiepilogo" class="print-header-block">Riepilogo di tutte le commesse<div class="print-sub" id="printHeaderCommessaRiepilogoSub"></div></div>
 
     <div class="table-wrap" style="margin-bottom:20px;">
@@ -3058,6 +3070,26 @@ function getCommessaSummaryPeriod(){
   return { start, end };
 }
 
+// Riempie il menu a tendina "Vedi dettaglio conti di" sopra il Riepilogo di tutte le commesse,
+// con "Totale complessivo" in cima, poi ogni commessa (ripartitrice compresa).
+function populateCommessaBreakdownPicker(){
+  const sel = document.getElementById('commessaBreakdownPickerCommessa');
+  if(!sel) return;
+  const prevValue = sel.value;
+  sel.innerHTML = '';
+  const optTot = document.createElement('option');
+  optTot.value = '__totale__';
+  optTot.textContent = 'Totale complessivo';
+  sel.appendChild(optTot);
+  data.commesse.forEach(c=>{
+    const opt = document.createElement('option');
+    opt.value = c.id;
+    opt.textContent = c.name;
+    sel.appendChild(opt);
+  });
+  if(prevValue && Array.from(sel.options).some(o=>o.value===prevValue)) sel.value = prevValue;
+}
+
 function renderCommessaSummary(){
   const tbody = document.getElementById('commessaSummaryTableBody');
   if(!tbody) return;
@@ -3065,6 +3097,8 @@ function renderCommessaSummary(){
 
   const printSub = document.getElementById('printHeaderCommessaRiepilogoSub');
   if(printSub) printSub.textContent = data.name || '';
+
+  populateCommessaBreakdownPicker();
 
   if(data.commesse.length === 0){
     const tr = document.createElement('tr');
@@ -7501,6 +7535,18 @@ document.getElementById('odooModalCloseBtn').addEventListener('click', odooClose
 document.getElementById('commessaBreakdownCloseBtn').addEventListener('click', closeCommessaBreakdownModal);
 document.getElementById('commessaBreakdownModalOverlay').addEventListener('click', (e)=>{
   if(e.target.id === 'commessaBreakdownModalOverlay') closeCommessaBreakdownModal();
+});
+document.getElementById('commessaBreakdownPickerBtn').addEventListener('click', ()=>{
+  const commessaSel = document.getElementById('commessaBreakdownPickerCommessa');
+  const sezioneSel = document.getElementById('commessaBreakdownPickerSezione');
+  const sezioneLabels = { ricavi:'Ricavi', costi_dir:'Costi diretti', costi_ind:'Costi indiretti', oneri:'Oneri' };
+  const sid = sezioneSel.value;
+  if(commessaSel.value === '__totale__'){
+    openCommessaBreakdownModal(null, sid, sezioneLabels[sid], 'Totale complessivo');
+  } else {
+    const c = data.commesse.find(c=>c.id === commessaSel.value);
+    if(c) openCommessaBreakdownModal(c.id, sid, sezioneLabels[sid], c.name);
+  }
 });
 
 document.getElementById('odooLoadBtn').addEventListener('click', async ()=>{
