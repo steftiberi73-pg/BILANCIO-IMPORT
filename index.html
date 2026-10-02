@@ -2390,11 +2390,17 @@ function computeCommessaSectionBreakdown(commessaId, sectionId, period){
   addFromMap(totals.perAccountFornitori, 'da dipendente');
   addFromMap(totals.perAccountMonteOre, 'da monte ore');
 
-  if(['costi_dir','costi_ind','oneri'].includes(sectionId) && totals.overheadQuota && data.ripartitriceCommessaId && commessaId !== data.ripartitriceCommessaId){
-    const quota = sum12(totals.overheadQuota[sectionId]);
-    if(Math.abs(quota) >= 0.005){
-      rows.push({ label: 'Quota ripartita da "' + getCommessaNameById(data.ripartitriceCommessaId) + '"', amount: quota, badge: 'ripartizione' });
-    }
+  if(['costi_dir','costi_ind','oneri'].includes(sectionId) && data.ripartitriceCommessaId && commessaId !== data.ripartitriceCommessaId){
+    const ripName = getCommessaNameById(data.ripartitriceCommessaId);
+    const overheadByAccount = computeRipartizioneOverheadByAccount();
+    const mine = (overheadByAccount[commessaId]) || {};
+    Object.keys(mine).forEach(accId=>{
+      const acc = getAccountById(accId);
+      if(!acc || acc.category !== sectionId) return;
+      const amount = sum12(mine[accId]);
+      if(Math.abs(amount) < 0.005) return;
+      rows.push({ label: 'Quota di "' + acc.name + '" ripartita da "' + ripName + '"', amount, badge: 'ripartizione' });
+    });
   }
 
   rows.sort((a,b)=> Math.abs(b.amount) - Math.abs(a.amount));
@@ -2534,6 +2540,56 @@ function computeRipartizioneOverhead(){
       result[c.id].costi_dir[m] += quotaDir;
       result[c.id].costi_ind[m] += quotaInd;
       result[c.id].oneri[m] += quotaOneri;
+    });
+  }
+  return result;
+}
+
+// Come computeRipartizioneOverhead, ma invece di un unico totale per sezione (Costi diretti/
+// Costi indiretti/Oneri) tiene la ripartizione separata conto per conto, cosi' nella maschera di
+// dettaglio (clic sulle celle di "Riepilogo di tutte le commesse") si vede, ad esempio, "Quota di
+// 'Affitti' ripartita da ..." invece di un unico importo complessivo. La proporzione usata per
+// ripartire (in base al peso dei ricavi mensili) è identica a computeRipartizioneOverhead: solo
+// il risultato viene tenuto diviso per conto anziché sommato. Ritorna una mappa
+// commessaId -> { accountId: monthly[12] }.
+function computeRipartizioneOverheadByAccount(){
+  const result = {};
+  data.commesse.forEach(c=>{ result[c.id] = {}; });
+
+  const ripId = data.ripartitriceCommessaId;
+  if(!ripId) return result;
+  const rip = data.commesse.find(c=>c.id === ripId);
+  if(!rip) return result;
+
+  const altre = data.commesse.filter(c=>c.id !== ripId);
+  if(!altre.length) return result;
+
+  const ripTotals = computeCommessaTotals(ripId, { skipOverhead:true });
+  const ricaviByCommessa = {};
+  altre.forEach(c=>{ ricaviByCommessa[c.id] = computeCommessaTotals(c.id, { skipOverhead:true }).sectionTotals.ricavi; });
+
+  // Conti della ripartitrice da redistribuire (Costi diretti/indiretti/Oneri, comprese le quote
+  // inserite da Fornitori), tenuti separati per conto invece di sommati per sezione.
+  const poolByAccount = {};
+  function addPool(map){
+    Object.keys(map).forEach(accId=>{
+      const acc = getAccountById(accId);
+      if(!acc || !['costi_dir','costi_ind','oneri'].includes(acc.category)) return;
+      if(!poolByAccount[accId]) poolByAccount[accId] = Array(MONTHS).fill(0);
+      map[accId].forEach((v,i)=>{ poolByAccount[accId][i] += v; });
+    });
+  }
+  addPool(ripTotals.perAccount);
+  addPool(ripTotals.perAccountFornitori);
+
+  for(let m=0; m<MONTHS; m++){
+    const totRicavi = altre.reduce((s,c)=> s + (ricaviByCommessa[c.id][m] || 0), 0);
+    altre.forEach(c=>{
+      const share = totRicavi > 0 ? (ricaviByCommessa[c.id][m] || 0) / totRicavi : 1/altre.length;
+      Object.keys(poolByAccount).forEach(accId=>{
+        if(!result[c.id][accId]) result[c.id][accId] = Array(MONTHS).fill(0);
+        result[c.id][accId][m] += poolByAccount[accId][m] * share;
+      });
     });
   }
   return result;
