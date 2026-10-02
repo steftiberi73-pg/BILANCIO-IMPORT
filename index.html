@@ -3121,7 +3121,14 @@ function renderCommessaSummary(){
       if(sid){
         td.style.cursor = 'pointer';
         td.title = 'Clicca per vedere da quali conti è composto questo importo';
+        td.style.position = 'relative';
         td.addEventListener('click', ()=> openCommessaBreakdownModal(c.id, sid, sectionLabelsByCol[i], c.name));
+        const icon = document.createElement('span');
+        icon.textContent = '🔍';
+        icon.title = 'Vedi il dettaglio dei conti';
+        icon.style.cssText = 'cursor:pointer; margin-left:6px; font-size:12px; opacity:0.6;';
+        icon.addEventListener('click', (e)=>{ e.stopPropagation(); openCommessaBreakdownModal(c.id, sid, sectionLabelsByCol[i], c.name); });
+        td.appendChild(icon);
       }
       tr.appendChild(td);
     });
@@ -3147,7 +3154,14 @@ function renderCommessaSummary(){
       if(sid){
         td.style.cursor = 'pointer';
         td.title = 'Clicca per vedere da quali conti è composto questo importo';
+        td.style.position = 'relative';
         td.addEventListener('click', ()=> openCommessaBreakdownModal(null, sid, sectionLabelsByCol[i], 'Totale complessivo'));
+        const icon = document.createElement('span');
+        icon.textContent = '🔍';
+        icon.title = 'Vedi il dettaglio dei conti';
+        icon.style.cssText = 'cursor:pointer; margin-left:6px; font-size:12px; opacity:0.6;';
+        icon.addEventListener('click', (e)=>{ e.stopPropagation(); openCommessaBreakdownModal(null, sid, sectionLabelsByCol[i], 'Totale complessivo'); });
+        td.appendChild(icon);
       }
       trTot.appendChild(td);
     });
