@@ -782,6 +782,27 @@
     </div>
   </div>
 
+  <div id="commessaBreakdownModalOverlay" class="odoo-modal-overlay" style="display:none;">
+    <div class="odoo-modal">
+      <h2 style="margin-top:0;" id="commessaBreakdownTitle">Dettaglio</h2>
+      <p class="panel-hint" id="commessaBreakdownSub"></p>
+      <div style="max-height:50vh; overflow-y:auto; border:1px solid var(--border); border-radius:8px;">
+        <table id="commessaBreakdownTable" style="width:100%; border-collapse:collapse; font-size:13px;">
+          <thead>
+            <tr style="background:#fafbfc;">
+              <th style="text-align:left; padding:8px;">Conto</th>
+              <th style="text-align:right; padding:8px;">Importo</th>
+            </tr>
+          </thead>
+          <tbody id="commessaBreakdownBody"></tbody>
+        </table>
+      </div>
+      <div class="odoo-modal-actions">
+        <button id="commessaBreakdownCloseBtn" class="danger">Chiudi</button>
+      </div>
+    </div>
+  </div>
+
   <div id="printHeader" class="print-header-block">Conto Economico Mensile<div class="print-sub" id="printHeaderSub"></div></div>
 
   <div class="table-wrap main-table-wrap">
@@ -2334,6 +2355,129 @@ function computeCommessaTotalsAggregate(){
   return { perAccount, perAccountFornitori, perAccountMonteOre, perAccountMonteOreByDipendente, overheadQuota, sectionTotals, mol: molMonthly, risultato: risultatoMonthly };
 }
 
+// Dettaglio dei conti che compongono il totale di una sezione (ricavi/costi_dir/costi_ind/oneri)
+// per una commessa specifica, nel periodo selezionato. Usato dalla maschera che si apre
+// cliccando una cella di "Riepilogo di tutte le commesse". Ritorna un array di
+// { label, amount, badge? } ordinato per importo decrescente (in valore assoluto).
+function computeCommessaSectionBreakdown(commessaId, sectionId, period){
+  const totals = computeCommessaTotals(commessaId);
+  const sum12 = (arr)=> arr.slice(period.start, period.end+1).reduce((a,b)=>a+b,0);
+  const rows = [];
+
+  function addFromMap(map, badge){
+    Object.keys(map).forEach(accId=>{
+      const acc = getAccountById(accId);
+      if(!acc || acc.category !== sectionId) return;
+      const amount = sum12(map[accId]);
+      if(Math.abs(amount) < 0.005) return;
+      rows.push({ label: acc.name + (badge ? '' : ''), amount, badge });
+    });
+  }
+
+  addFromMap(totals.perAccount, null);
+  addFromMap(totals.perAccountFornitori, 'da dipendente');
+  addFromMap(totals.perAccountMonteOre, 'da monte ore');
+
+  if(['costi_dir','costi_ind','oneri'].includes(sectionId) && totals.overheadQuota && data.ripartitriceCommessaId && commessaId !== data.ripartitriceCommessaId){
+    const quota = sum12(totals.overheadQuota[sectionId]);
+    if(Math.abs(quota) >= 0.005){
+      rows.push({ label: 'Quota ripartita da "' + getCommessaNameById(data.ripartitriceCommessaId) + '"', amount: quota, badge: 'ripartizione' });
+    }
+  }
+
+  rows.sort((a,b)=> Math.abs(b.amount) - Math.abs(a.amount));
+  return rows;
+}
+
+// Come sopra, ma per la riga aggregata "Totale complessivo" di "Riepilogo di tutte le commesse":
+// somma il dettaglio per conto su tutte le commesse (tranne l'eventuale "commessa da ripartire",
+// i cui costi sono già interamente redistribuiti sulle altre tramite la quota di ripartizione).
+function computeAllCommesseSectionBreakdown(sectionId, period){
+  const ripId = data.ripartitriceCommessaId;
+  const altre = data.commesse.filter(c=> c.id !== ripId);
+  const byLabel = {};
+  const order = [];
+
+  altre.forEach(c=>{
+    const rows = computeCommessaSectionBreakdown(c.id, sectionId, period);
+    rows.forEach(r=>{
+      const key = r.label + '||' + (r.badge || '');
+      if(!byLabel[key]){ byLabel[key] = { label: r.label, amount: 0, badge: r.badge }; order.push(key); }
+      byLabel[key].amount += r.amount;
+    });
+  });
+
+  const rows = order.map(k=> byLabel[k]).filter(r=> Math.abs(r.amount) >= 0.005);
+  rows.sort((a,b)=> Math.abs(b.amount) - Math.abs(a.amount));
+  return rows;
+}
+
+// Apre la maschera di dettaglio per una sezione (conti che compongono il totale) di una
+// commessa, oppure (passando commessaId === null) della riga "Totale complessivo".
+function openCommessaBreakdownModal(commessaId, sectionId, sectionLabel, commessaLabel){
+  const overlay = document.getElementById('commessaBreakdownModalOverlay');
+  const title = document.getElementById('commessaBreakdownTitle');
+  const sub = document.getElementById('commessaBreakdownSub');
+  const body = document.getElementById('commessaBreakdownBody');
+  if(!overlay || !title || !sub || !body) return;
+
+  const period = getCommessaSummaryPeriod();
+  const rows = commessaId === null
+    ? computeAllCommesseSectionBreakdown(sectionId, period)
+    : computeCommessaSectionBreakdown(commessaId, sectionId, period);
+
+  title.textContent = sectionLabel + ' — ' + commessaLabel;
+  sub.textContent = 'Conti che compongono il totale nel periodo selezionato.';
+  body.innerHTML = '';
+
+  if(rows.length === 0){
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 2;
+    td.className = 'no-accounts-hint';
+    td.textContent = 'Nessun importo in questa sezione per il periodo selezionato.';
+    tr.appendChild(td);
+    body.appendChild(tr);
+  } else {
+    let tot = 0;
+    rows.forEach(r=>{
+      tot += r.amount;
+      const tr = document.createElement('tr');
+      const tdName = document.createElement('td');
+      tdName.style.padding = '6px 8px';
+      tdName.innerHTML = escapeHtml(r.label) + (r.badge ? ' <span class="badge">' + escapeHtml(r.badge) + '</span>' : '');
+      tr.appendChild(tdName);
+      const tdVal = document.createElement('td');
+      tdVal.style.padding = '6px 8px';
+      tdVal.style.textAlign = 'right';
+      tdVal.textContent = fmt(r.amount);
+      if(r.amount < 0) tdVal.classList.add('neg');
+      tr.appendChild(tdVal);
+      body.appendChild(tr);
+    });
+    const trTot = document.createElement('tr');
+    trTot.className = 'total-row';
+    const tdLabel = document.createElement('td');
+    tdLabel.style.padding = '6px 8px';
+    tdLabel.textContent = 'Totale';
+    trTot.appendChild(tdLabel);
+    const tdVal = document.createElement('td');
+    tdVal.style.padding = '6px 8px';
+    tdVal.style.textAlign = 'right';
+    tdVal.textContent = fmt(tot);
+    if(tot < 0) tdVal.classList.add('neg');
+    trTot.appendChild(tdVal);
+    body.appendChild(trTot);
+  }
+
+  overlay.style.display = 'flex';
+}
+
+function closeCommessaBreakdownModal(){
+  const overlay = document.getElementById('commessaBreakdownModalOverlay');
+  if(overlay) overlay.style.display = 'none';
+}
+
 // Ripartisce, mese per mese, i Costi diretti (compresi i Costi di produzione, incluse le
 // eventuali quote da Fornitori), i Costi indiretti e gli Oneri diversi e finanziari inseriti
 // sulla "commessa da ripartire" (data.ripartitriceCommessaId) su tutte le altre commesse, in
@@ -2966,11 +3110,19 @@ function renderCommessaSummary(){
     const tdName = document.createElement('td');
     tdName.innerHTML = escapeHtml(c.name) + (isRipartitrice ? ' <span class="badge">DA RIPARTIRE</span>' : '');
     tr.appendChild(tdName);
+    const sectionIdsByCol = { 0:'ricavi', 1:'costi_dir', 3:'costi_ind', 4:'oneri' };
+    const sectionLabelsByCol = { 0:'Ricavi', 1:'Costi diretti', 3:'Costi indiretti', 4:'Oneri' };
     [ricavi, costiDir, mol, costiInd, oneri, risultato].forEach((v, i)=>{
       const td = document.createElement('td');
       td.textContent = fmt(v);
       if(v<0) td.classList.add('neg');
       if(i === 5) td.className += ' total-col'; // colonna Risultato
+      const sid = sectionIdsByCol[i];
+      if(sid){
+        td.style.cursor = 'pointer';
+        td.title = 'Clicca per vedere da quali conti è composto questo importo';
+        td.addEventListener('click', ()=> openCommessaBreakdownModal(c.id, sid, sectionLabelsByCol[i], c.name));
+      }
       tr.appendChild(td);
     });
     return tr;
@@ -2983,13 +3135,23 @@ function renderCommessaSummary(){
   const tdLabel = document.createElement('td');
   tdLabel.textContent = 'Totale complessivo';
   trTot.appendChild(tdLabel);
-  [grand.ricavi, grand.costi_dir, grand.mol, grand.costi_ind, grand.oneri, grand.risultato].forEach((v, i)=>{
-    const td = document.createElement('td');
-    td.textContent = fmt(v);
-    if(v<0) td.classList.add('neg');
-    if(i === 5) td.className += ' total-col';
-    trTot.appendChild(td);
-  });
+  {
+    const sectionIdsByCol = { 0:'ricavi', 1:'costi_dir', 3:'costi_ind', 4:'oneri' };
+    const sectionLabelsByCol = { 0:'Ricavi', 1:'Costi diretti', 3:'Costi indiretti', 4:'Oneri' };
+    [grand.ricavi, grand.costi_dir, grand.mol, grand.costi_ind, grand.oneri, grand.risultato].forEach((v, i)=>{
+      const td = document.createElement('td');
+      td.textContent = fmt(v);
+      if(v<0) td.classList.add('neg');
+      if(i === 5) td.className += ' total-col';
+      const sid = sectionIdsByCol[i];
+      if(sid){
+        td.style.cursor = 'pointer';
+        td.title = 'Clicca per vedere da quali conti è composto questo importo';
+        td.addEventListener('click', ()=> openCommessaBreakdownModal(null, sid, sectionLabelsByCol[i], 'Totale complessivo'));
+      }
+      trTot.appendChild(td);
+    });
+  }
   tbody.appendChild(trTot);
 
   if(ripartitrice){
@@ -7322,6 +7484,10 @@ function odooRenderAccountsTable(accounts){
 
 document.getElementById('importOdooBtn').addEventListener('click', odooOpenModal);
 document.getElementById('odooModalCloseBtn').addEventListener('click', odooCloseModal);
+document.getElementById('commessaBreakdownCloseBtn').addEventListener('click', closeCommessaBreakdownModal);
+document.getElementById('commessaBreakdownModalOverlay').addEventListener('click', (e)=>{
+  if(e.target.id === 'commessaBreakdownModalOverlay') closeCommessaBreakdownModal();
+});
 
 document.getElementById('odooLoadBtn').addEventListener('click', async ()=>{
   const statusEl = document.getElementById('odooStatusMsg');
