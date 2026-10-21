@@ -682,6 +682,18 @@
     /* Ricavi monte ore: export separati per l'elenco della singola commessa e per il riepilogo per dipendente */
     body.print-monteore-summary .monteore-detail-block{ display:none !important; }
     body.print-monteore-detail .monteore-summary-block{ display:none !important; }
+    /* Export PDF del dettaglio conti (maschera aperta cliccando una cella in "Riepilogo di
+       tutte le commesse"): in stampa nascondi tutto il resto e mostra solo la maschera stessa,
+       senza lo sfondo scurito e senza il limite di altezza (così può andare su più pagine). */
+    body.print-commessa-breakdown > *:not(#commessaBreakdownModalOverlay){ display:none !important; }
+    body.print-commessa-breakdown #commessaBreakdownModalOverlay{
+      position:static !important; background:none !important; padding:0 !important; display:block !important;
+    }
+    body.print-commessa-breakdown #commessaBreakdownModalOverlay .odoo-modal{ box-shadow:none; max-width:none; }
+    body.print-commessa-breakdown #commessaBreakdownModalOverlay .odoo-modal > div[style*="max-height"]{
+      max-height:none !important; overflow:visible !important; border:none !important;
+    }
+    body.print-commessa-breakdown #commessaBreakdownModalOverlay .odoo-modal-actions{ display:none !important; }
     @page{ size: landscape; margin: 10mm; }
   }
 </style>
@@ -825,7 +837,11 @@
         <tbody id="commessaBreakdownBody"></tbody>
       </table>
     </div>
-    <div class="odoo-modal-actions">
+    <div class="odoo-modal-actions" style="justify-content:space-between;">
+      <div style="display:flex; gap:8px;">
+        <button id="commessaBreakdownXlsBtn">Esporta Excel</button>
+        <button id="commessaBreakdownPdfBtn">Esporta PDF</button>
+      </div>
       <button id="commessaBreakdownCloseBtn" class="danger">Chiudi</button>
     </div>
   </div>
@@ -2447,6 +2463,10 @@ function openCommessaBreakdownModal(commessaId, sectionId, sectionLabel, commess
   title.textContent = sectionLabel + ' — ' + commessaLabel;
   sub.textContent = 'Conti che compongono il totale nel periodo selezionato.';
   body.innerHTML = '';
+
+  // Tiene traccia dell'ultimo dettaglio aperto, usato dai pulsanti "Esporta Excel"/"Esporta PDF"
+  // qui sotto nella stessa maschera.
+  window.lastCommessaBreakdown = { sectionLabel, commessaLabel, rows };
 
   if(rows.length === 0){
     const tr = document.createElement('tr');
@@ -7589,6 +7609,50 @@ function odooRenderAccountsTable(accounts){
 document.getElementById('importOdooBtn').addEventListener('click', odooOpenModal);
 document.getElementById('odooModalCloseBtn').addEventListener('click', odooCloseModal);
 document.getElementById('commessaBreakdownCloseBtn').addEventListener('click', closeCommessaBreakdownModal);
+
+function buildCommessaBreakdownReportRows(){
+  const info = window.lastCommessaBreakdown;
+  const rows = [['Conto', 'Importo']];
+  if(!info) return rows;
+  let tot = 0;
+  info.rows.forEach(r=>{
+    tot += r.amount;
+    rows.push([r.label + (r.badge ? ' (' + r.badge + ')' : ''), r.amount]);
+  });
+  rows.push(['Totale', tot]);
+  return rows;
+}
+
+function commessaBreakdownFileBaseName(){
+  const info = window.lastCommessaBreakdown;
+  const safe = (s)=> String(s||'').replace(/[^a-z0-9]+/gi, '_');
+  const safeSection = safe(info ? info.sectionLabel : 'dettaglio');
+  const safeCommessa = safe(info ? info.commessaLabel : '');
+  return 'dettaglio_' + safeSection + '_' + safeCommessa;
+}
+
+document.getElementById('commessaBreakdownXlsBtn').addEventListener('click', ()=>{
+  if(typeof XLSX === 'undefined'){
+    alert('Libreria Excel non disponibile (serve una connessione internet per caricarla la prima volta).');
+    return;
+  }
+  const rows = buildCommessaBreakdownReportRows();
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [{ wch: 40 }, { wch: 16 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Dettaglio conti');
+  XLSX.writeFile(wb, commessaBreakdownFileBaseName() + '.xlsx');
+});
+
+document.getElementById('commessaBreakdownPdfBtn').addEventListener('click', ()=>{
+  const prevTitle = document.title;
+  document.title = commessaBreakdownFileBaseName();
+  document.body.classList.add('print-commessa-breakdown');
+  window.print();
+  document.body.classList.remove('print-commessa-breakdown');
+  document.title = prevTitle;
+});
+
 document.getElementById('commessaBreakdownModalOverlay').addEventListener('click', (e)=>{
   if(e.target.id === 'commessaBreakdownModalOverlay') closeCommessaBreakdownModal();
 });
