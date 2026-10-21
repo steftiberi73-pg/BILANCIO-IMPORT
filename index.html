@@ -1553,13 +1553,22 @@ const FORNITORI_ACCOUNT_NAMES = ['costi di produzione', 'costi di produzione pro
 function isFornitoriAccountName(name){
   return FORNITORI_ACCOUNT_NAMES.includes(String(name||'').trim().toLowerCase());
 }
-// Crea nel piano dei conti (sezione Costi diretti) i conti "Costi di produzione" e "Costi di
-// produzione professionali" se non esistono ancora, così la scheda Fornitori funziona da subito.
+// Conti gestiti dalla scheda Fornitori che vanno in Costi indiretti invece che in Costi diretti
+// (tutti gli altri FORNITORI_ACCOUNT_NAMES restano in Costi diretti, il default).
+const FORNITORI_ACCOUNT_NAMES_COSTI_IND = ['costi di consulenze contabili ed elaborazione dati'];
+
+// Crea nel piano dei conti i conti di FORNITORI_ACCOUNT_NAMES se non esistono ancora (di norma in
+// Costi diretti, tranne quelli in FORNITORI_ACCOUNT_NAMES_COSTI_IND che vanno in Costi indiretti),
+// così la scheda Fornitori funziona da subito. Corregge anche la sezione di un conto già esistente
+// se non corrisponde a quella attesa (es. un conto creato in precedenza nella sezione sbagliata).
 function ensureFornitoriAccounts(chart){
   FORNITORI_ACCOUNT_NAMES.forEach(name=>{
-    const exists = chart.some(a=> a.name.trim().toLowerCase() === name);
-    if(!exists){
-      chart.push({ id: makeId(), name: name.charAt(0).toUpperCase()+name.slice(1), category:'costi_dir', code: nextAccountCode() });
+    const expectedCategory = FORNITORI_ACCOUNT_NAMES_COSTI_IND.includes(name) ? 'costi_ind' : 'costi_dir';
+    const existing = chart.find(a=> a.name.trim().toLowerCase() === name);
+    if(!existing){
+      chart.push({ id: makeId(), name: name.charAt(0).toUpperCase()+name.slice(1), category: expectedCategory, code: nextAccountCode() });
+    } else if(existing.category !== expectedCategory){
+      existing.category = expectedCategory;
     }
   });
   return chart;
