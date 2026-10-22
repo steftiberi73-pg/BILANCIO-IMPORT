@@ -750,7 +750,10 @@
     <button id="exportBackupBtn">Esporta backup completo (JSON)</button>
     <button id="importBackupBtn">Importa backup completo (JSON)</button>
     <input type="file" id="importBackupFile" accept=".json" style="display:none">
-    <span style="color:var(--muted); font-size:11.5px;">I dati sono salvati nel browser (localStorage) e non si spostano da soli tra domini diversi. Il backup contiene TUTTI i dati (tutte le aziende, piano dei conti, commesse, fornitori, monte ore...): usalo per trasferirli, ad esempio dal browser dove lavoravi prima al sito pubblicato online.</span>
+    <button id="exportBackupCompanyBtn">Esporta backup azienda corrente (JSON)</button>
+    <button id="importBackupCompanyBtn">Importa backup di un'azienda (JSON)</button>
+    <input type="file" id="importBackupCompanyFile" accept=".json" style="display:none">
+    <span style="color:var(--muted); font-size:11.5px;">I dati sono salvati nel browser (localStorage) e non si spostano da soli tra domini diversi. Il backup contiene TUTTI i dati (tutte le aziende, piano dei conti, commesse, fornitori, monte ore...): usalo per trasferirli, ad esempio dal browser dove lavoravi prima al sito pubblicato online. Il backup azienda salva/ripristina solo l'azienda selezionata (con i conti che usa), senza toccare le altre.</span>
   </div>
 
   <div id="odooModalOverlay" class="odoo-modal-overlay" style="display:none;">
@@ -7294,6 +7297,96 @@ document.getElementById('exportBackupBtn').addEventListener('click', ()=>{
   a.download = 'backup_conto_economico_' + today + '.json';
   a.click();
   URL.revokeObjectURL(url);
+});
+
+// ---- Backup di una singola azienda (JSON): contiene i dati dell'azienda selezionata e i soli conti
+// del piano dei conti che usa. In import l'azienda viene aggiunta (o, a scelta, sostituita se esiste
+// già); i conti mancanti vengono creati, quelli con stesso nome e sezione vengono riutilizzati. ----
+
+document.getElementById('exportBackupCompanyBtn').addEventListener('click', ()=>{
+  const company = getCurrentCompany();
+  const companyJson = JSON.stringify(company);
+  const usedAccounts = store.chartOfAccounts.filter(a=> companyJson.indexOf('"' + a.id + '"') !== -1);
+  const payload = { type: 'company-backup', version: 1, exportedAt: new Date().toISOString(), company, chartOfAccounts: usedAccounts };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const today = new Date().toISOString().slice(0,10);
+  const safeName = (company.name || 'azienda').replace(/[^a-z0-9]+/gi, '_');
+  a.download = 'backup_azienda_' + safeName + '_' + today + '.json';
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+document.getElementById('importBackupCompanyBtn').addEventListener('click', ()=>{
+  document.getElementById('importBackupCompanyFile').click();
+});
+
+document.getElementById('importBackupCompanyFile').addEventListener('change', (e)=>{
+  const file = e.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = function(ev){
+    try {
+      const parsed = JSON.parse(ev.target.result);
+      if(!parsed || parsed.type !== 'company-backup' || !parsed.company || !Array.isArray(parsed.chartOfAccounts)){
+        alert('File non valido: non sembra un backup di una singola azienda (usa "Esporta backup azienda corrente").');
+        e.target.value = '';
+        return;
+      }
+      // 1) conti: riusa quelli con stesso id, altrimenti stesso nome+sezione, altrimenti crea
+      const idMap = {};
+      parsed.chartOfAccounts.forEach(acc=>{
+        const sameId = store.chartOfAccounts.find(a=> a.id === acc.id);
+        if(sameId){ idMap[acc.id] = sameId.id; return; }
+        const key = String(acc.name||'').trim().toLowerCase();
+        const sameName = store.chartOfAccounts.find(a=> a.category === acc.category && String(a.name||'').trim().toLowerCase() === key);
+        if(sameName){ idMap[acc.id] = sameName.id; return; }
+        const created = { id: acc.id, name: acc.name, category: acc.category, code: acc.code };
+        store.chartOfAccounts.push(created);
+        idMap[acc.id] = created.id;
+      });
+      let companyJson = JSON.stringify(parsed.company);
+      Object.keys(idMap).forEach(oldId=>{
+        if(idMap[oldId] !== oldId) companyJson = companyJson.split('"' + oldId + '"').join('"' + idMap[oldId] + '"');
+      });
+      const company = JSON.parse(companyJson);
+
+      // 2) azienda: se esiste già (stesso id) chiedi se sostituirla oppure importare come nuova
+      const existingIdx = store.companies.findIndex(c=> c.id === company.id);
+      if(existingIdx !== -1){
+        const existing = store.companies[existingIdx];
+        if(confirm('Esiste già l\'azienda «' + existing.name + '». Vuoi SOSTITUIRE i suoi dati con quelli del backup? (Annulla = non sostituire)')){
+          store.companies[existingIdx] = company;
+        } else if(confirm('Vuoi allora importarla come NUOVA azienda (copia)?')){
+          company.id = makeId();
+          company.name = (company.name || 'Azienda') + ' (copia)';
+          store.companies.push(company);
+        } else {
+          e.target.value = '';
+          return;
+        }
+      } else {
+        store.companies.push(company);
+      }
+      store.currentId = company.id;
+      store.companies.forEach(c=> normalizeCompany(c, store.chartOfAccounts));
+      ensureAccountCodes(store.chartOfAccounts);
+      ensureFornitoriAccounts(store.chartOfAccounts);
+      ensureMonteOreAccounts(store.chartOfAccounts);
+      saveData();
+      data = getCurrentCompany();
+      document.getElementById('yearField').value = data.year || '2026';
+      renderCompanySelect();
+      render();
+      alert('Azienda «' + data.name + '» importata correttamente.');
+    } catch(err){
+      alert('Errore nella lettura del file: ' + err.message);
+    }
+    e.target.value = '';
+  };
+  reader.readAsText(file);
 });
 
 document.getElementById('importBackupBtn').addEventListener('click', ()=>{
