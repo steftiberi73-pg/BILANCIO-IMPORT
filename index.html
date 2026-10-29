@@ -880,6 +880,12 @@
   </div>
 
   <div class="panel">
+    <h2>Codici dei gruppi (per Budget Previsionale)</h2>
+    <div class="panel-hint">Assegna un codice a ciascun gruppo di spese (es. "Spese personale" = 057): con "Esporta saldi per Budget" il totale mensile del gruppo viene riportato sul conto del Budget Previsionale che ha lo stesso codice.</div>
+    <div id="gruppiCodiciList"></div>
+  </div>
+
+  <div class="panel">
     <h2>Spese raggruppate</h2>
     <div class="panel-hint">Inserisci singole voci di spesa scegliendo mese, conto e importo (per l'azienda selezionata nella scheda "Conto Economico"). Qui sotto trovi il saldo mensile per ciascun conto.</div>
     <input type="text" id="searchSpese" class="search-input" placeholder="Cerca per conto, voce o mese...">
@@ -1388,6 +1394,7 @@ function emptyCompany(name){
     fornitori: [],
     monteOre: [],
     costiManualiDipendenti: [],
+    codiciGruppiSpese: { 'spese personale': '057' },
     year: '2026'
   };
 }
@@ -1450,6 +1457,10 @@ function normalizeCompany(c, globalChart){
   if(!Array.isArray(c.fornitori)) c.fornitori = [];
   if(!Array.isArray(c.monteOre)) c.monteOre = [];
   if(!Array.isArray(c.costiManualiDipendenti)) c.costiManualiDipendenti = [];
+  // codice (per l'export verso il Budget Previsionale) di ciascun gruppo di Spese raggruppate;
+  // chiave = nome del gruppo in minuscolo. "Spese personale" parte con il codice 057.
+  if(!c.codiciGruppiSpese || typeof c.codiciGruppiSpese !== 'object' || Array.isArray(c.codiciGruppiSpese)) c.codiciGruppiSpese = {};
+  if(c.codiciGruppiSpese['spese personale'] === undefined) c.codiciGruppiSpese['spese personale'] = '057';
   if(!c.year) c.year = '2026';
   if(!c.id) c.id = makeId();
   if(!c.name) c.name = 'Azienda';
@@ -2112,6 +2123,11 @@ function speseByGruppoForCategory(category){
   return result;
 }
 
+function gruppoSpeseKey(voce){ return String(voce||'').trim().toLowerCase(); }
+function getCodiceGruppoSpese(voce){
+  return String((data.codiciGruppiSpese||{})[gruppoSpeseKey(voce)] || '').trim();
+}
+
 function computeByCode(){
   const perAccount = {};          // accountId -> monthly[12] (manuale + spese senza gruppo + previsionale + spostamenti)
   const spesePerGruppo = {};      // sectionId -> { voce -> monthly[12] } per le spese raggruppate CON un gruppo
@@ -2226,7 +2242,8 @@ function renderByCode(){
       Object.keys(gruppi).sort((a,b)=> a.localeCompare(b, 'it')).forEach(voce=>{
         const monthly = gruppi[voce];
         if(monthly.some(v=>v!==0)){
-          appendRow(voce + ' <span class="badge">spese raggruppate</span>', monthly, 'derived-row ' + section.cls);
+          const gc = getCodiceGruppoSpese(voce);
+          appendRow((gc ? '<span class="acc-code-chip">' + escapeHtml(gc) + '</span>' : '') + escapeHtml(voce) + ' <span class="badge">spese raggruppate</span>', monthly, 'derived-row ' + section.cls);
         }
       });
 
@@ -4923,7 +4940,59 @@ function renderCostiManualiList(){
 
 // ---- Spese raggruppate: voci puntuali (mese, conto, importo) + saldo mensile per conto ----
 
+// Elenco dei gruppi (campo "voce") presenti in Spese raggruppate, ciascuno con il suo codice per il
+// Budget Previsionale (modificabile).
+function renderGruppiCodici(){
+  const box = document.getElementById('gruppiCodiciList');
+  if(!box) return;
+  box.innerHTML = '';
+  const seen = {};
+  const gruppi = [];
+  data.speseRaggruppate.forEach(sp=>{
+    const v = String(sp.voce||'').trim();
+    if(!v) return;
+    const k = gruppoSpeseKey(v);
+    if(seen[k]) return;
+    seen[k] = true;
+    gruppi.push(v);
+  });
+  Object.keys(data.codiciGruppiSpese||{}).forEach(k=>{
+    if(!seen[k]){ seen[k] = true; gruppi.push(k.charAt(0).toUpperCase() + k.slice(1)); }
+  });
+  gruppi.sort((a,b)=> a.localeCompare(b, 'it'));
+  if(!gruppi.length){
+    const em = document.createElement('div');
+    em.className = 'no-accounts-hint';
+    em.textContent = 'Nessun gruppo presente: assegna un gruppo a una voce di spesa (o usa "Sposta un conto in Spese raggruppate").';
+    box.appendChild(em);
+    return;
+  }
+  gruppi.forEach(v=>{
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex; gap:8px; align-items:center; margin:6px 0;';
+    const lbl = document.createElement('span');
+    lbl.textContent = v;
+    lbl.style.minWidth = '220px';
+    const inp = document.createElement('input');
+    inp.type = 'text';
+    inp.placeholder = 'Codice (es. 057)';
+    inp.style.cssText = 'width:140px; padding:6px 8px; border:1px solid var(--border); border-radius:6px; font-size:13px;';
+    inp.value = getCodiceGruppoSpese(v);
+    inp.addEventListener('change', ()=>{
+      const code = inp.value.trim();
+      if(code) data.codiciGruppiSpese[gruppoSpeseKey(v)] = code;
+      else delete data.codiciGruppiSpese[gruppoSpeseKey(v)];
+      saveData();
+      renderByCode();
+    });
+    row.appendChild(lbl);
+    row.appendChild(inp);
+    box.appendChild(row);
+  });
+}
+
 function renderSpese(){
+  renderGruppiCodici();
   renderSpeseList();
   renderSpesePivot();
   renderMoveToSpeseSelect();
@@ -6502,7 +6571,8 @@ function buildByCodeReportRows(){
       const monthly = gruppi[voce];
       if(monthly.some(v=>v!==0)){
         const total = monthly.reduce((a,b)=>a+b,0);
-        rows.push([voce + ' (spese raggruppate)', ...monthly, total]);
+        const gc = getCodiceGruppoSpese(voce);
+        rows.push([(gc ? gc + ' - ' : '') + voce + ' (spese raggruppate)', ...monthly, total]);
       }
     });
     const sectMonthly = byCode.sectionTotals[sectionId];
@@ -6586,6 +6656,21 @@ function buildSaldiPerBudgetPayload(){
       const code = (acc.code || '').trim();
       if(!code){ senzaCodice.push(acc.name); return; }
       saldi[code] = monthly.map((v,i)=> (i>=period.start && i<=period.end) ? Math.round((parseFloat(v)||0) * 100) / 100 : null);
+    });
+    // gruppi di "Spese raggruppate" (es. Spese personale): riportati sul codice assegnato al gruppo
+    // (sommati se più gruppi/conti condividono lo stesso codice)
+    const gruppi = byCode.spesePerGruppo[sectionId] || {};
+    Object.keys(gruppi).forEach(voce=>{
+      const monthly = gruppi[voce];
+      if(!monthly.some(v=> Math.abs(v) > 0.0001)) return;
+      const code = getCodiceGruppoSpese(voce);
+      if(!code){ senzaCodice.push('Gruppo spese: ' + voce); return; }
+      const rounded = monthly.map((v,i)=> (i>=period.start && i<=period.end) ? Math.round((parseFloat(v)||0) * 100) / 100 : null);
+      if(saldi[code]){
+        saldi[code] = saldi[code].map((v,i)=> (v === null && rounded[i] === null) ? null : Math.round(((v||0) + (rounded[i]||0)) * 100) / 100);
+      } else {
+        saldi[code] = rounded;
+      }
     });
   });
   return {
