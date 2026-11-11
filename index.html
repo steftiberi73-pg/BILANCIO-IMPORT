@@ -854,8 +854,12 @@
 
   <div class="panel">
     <h2>Piano dei conti</h2>
-    <div class="panel-hint">Elenco dei conti disponibili, condiviso da tutte le aziende: definiscilo qui una sola volta, poi nella scheda "Conto Economico" seleziona per ciascuna azienda quali conti utilizzare in ogni sezione.</div>
-    <input type="text" id="searchPiano" class="search-input" placeholder="Cerca conto...">
+    <div class="panel-hint">Elenco dei conti disponibili: per ogni conto vedi a quali aziende è associato (e lo modifichi con il pulsante "Aziende"). Nelle schede Previsionale e Spostamenti ogni azienda vede solo i conti a lei associati; un conto già usato nei dati di un'azienda risulta sempre associato ad essa.</div>
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:6px;">
+      <input type="text" id="searchPiano" class="search-input" placeholder="Cerca conto..." style="flex:1 1 220px; margin-bottom:0;">
+      <label for="coaCompanyFilter" style="font-size:12.5px;">Mostra i conti di:</label>
+      <select id="coaCompanyFilter" style="padding:6px 8px; border:1px solid var(--border); border-radius:6px; font-size:13px;"></select>
+    </div>
     <div id="chartOfAccountsList"></div>
     <button class="panel-add-btn" id="addAccountBtn">+ Aggiungi conto al piano</button>
   </div>
@@ -1482,6 +1486,60 @@ function escapeHtml(str){
     .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
+// ---- Associazione conti <-> aziende: ogni conto del piano dei conti ha un elenco di aziende
+// (acc.companyIds). Un conto senza elenco (dati vecchi, o creato di recente da un import) è
+// considerato visibile a tutte le aziende finché non viene associato/migrato. ----
+function accountInCompany(acc, companyId){
+  if(!acc) return false;
+  if(!Array.isArray(acc.companyIds)) return true;
+  return acc.companyIds.indexOf(companyId) !== -1;
+}
+// Id dei conti già usati nei dati di un'azienda (Conto Economico, spese, previsionale, spostamenti,
+// commesse, fornitori, monte ore): un conto usato da un'azienda è sempre associato a quell'azienda.
+function companyUsedAccountIds(c){
+  const ids = new Set();
+  SECTION_IDS.forEach(sid=>{ (c[sid]||[]).forEach(r=>{ if(r && r.accountId) ids.add(r.accountId); }); });
+  ['speseRaggruppate','previsionali','spostamenti','ripartizioniCommessa','fornitori','monteOre'].forEach(k=>{
+    (c[k]||[]).forEach(r=>{ if(r && r.accountId) ids.add(r.accountId); });
+  });
+  return ids;
+}
+// Migrazione: i conti senza elenco di aziende vengono associati alle aziende che già li usano
+// (se nessuna li usa, a tutte le aziende). Toglie anche dagli elenchi le aziende non più esistenti.
+function ensureAccountCompanies(){
+  const companies = store.companies;
+  const existing = new Set(companies.map(c=>c.id));
+  const used = companies.map(c=> ({ id:c.id, ids: companyUsedAccountIds(c) }));
+  store.chartOfAccounts.forEach(acc=>{
+    if(!Array.isArray(acc.companyIds)){
+      const users = used.filter(u=> u.ids.has(acc.id)).map(u=> u.id);
+      acc.companyIds = users.length ? users : companies.map(c=>c.id);
+    } else {
+      acc.companyIds = acc.companyIds.filter(id=> existing.has(id));
+    }
+  });
+}
+// Associa all'azienda indicata tutti i conti che usa nei suoi dati (chiamata a ogni render).
+function syncCompanyAccounts(c){
+  if(!c) return;
+  const used = companyUsedAccountIds(c);
+  let changed = false;
+  store.chartOfAccounts.forEach(acc=>{
+    if(Array.isArray(acc.companyIds) && used.has(acc.id) && acc.companyIds.indexOf(c.id) === -1){
+      acc.companyIds.push(c.id);
+      changed = true;
+    }
+  });
+  if(changed) saveData();
+}
+// Conti di una sezione visibili all'azienda corrente (più, se indicato, quello già selezionato).
+function accountsByCategoryForCompany(category, selectedId){
+  return store.chartOfAccounts.filter(a=> a.category === category && (a.id === selectedId || accountInCompany(a, data.id)));
+}
+function firstAccountForCurrentCompany(){
+  return store.chartOfAccounts.find(a=> accountInCompany(a, data.id));
+}
+
 function accountsByCategory(category){
   return store.chartOfAccounts.filter(a=>a.category === category);
 }
@@ -1614,6 +1672,7 @@ function monteOreAccountIds(){
 let store = loadStore();
 ensureFornitoriAccounts(store.chartOfAccounts);
 ensureMonteOreAccounts(store.chartOfAccounts);
+ensureAccountCompanies();
 saveData();
 
 function getCurrentCompany(){
@@ -1626,6 +1685,8 @@ let data = getCurrentCompany();
 const searchState = { piano:'', spese:'', previsionale:'', spostamenti:'', fornitori:'', monteOre:'', costiManuali:'' };
 
 // Stato di espansione dei sezionali nel Piano dei conti: di default chiusi, mostrando solo le 4 intestazioni.
+let coaCompanyFilterId = '';   // '' = tutte le aziende
+const coaCompanyEditOpen = {}; // accountId -> true se il pannello "Aziende" è aperto
 const coaCollapsed = { ricavi:true, costi_dir:true, costi_ind:true, oneri:true };
 
 // Stato di espansione dei gruppi per conto nella lista "Spese raggruppate": di default tutti
@@ -3320,6 +3381,7 @@ function renderCommesse(){
 }
 
 function render(){
+  syncCompanyAccounts(data);
   renderChartOfAccounts();
   renderRipartiti();
   renderSpese();
@@ -3525,6 +3587,33 @@ function renderCoaRow(acc, idx){
     : 'Non ancora inserito in nessuna azienda';
   row.appendChild(usage);
 
+  // aziende associate al conto (etichette) + pulsante per modificarle
+  const chips = document.createElement('span');
+  chips.style.cssText = 'display:inline-flex; gap:4px; flex-wrap:wrap; align-items:center;';
+  const assoc = Array.isArray(acc.companyIds) ? store.companies.filter(c=> acc.companyIds.indexOf(c.id) !== -1) : store.companies;
+  if(!assoc.length){
+    const none = document.createElement('span');
+    none.style.cssText = 'font-size:11.5px; color:#b45309; background:#fffbeb; border:1px solid #fcd34d; border-radius:10px; padding:1px 8px;';
+    none.textContent = 'Nessuna azienda';
+    chips.appendChild(none);
+  }
+  assoc.forEach(c=>{
+    const chip = document.createElement('span');
+    chip.style.cssText = 'font-size:11.5px; background:var(--accent-light, #e8f0fe); border:1px solid var(--border); border-radius:10px; padding:1px 8px; white-space:nowrap;';
+    chip.textContent = c.name;
+    chips.appendChild(chip);
+  });
+  row.appendChild(chips);
+  const editBtn = document.createElement('button');
+  editBtn.textContent = coaCompanyEditOpen[acc.id] ? 'Chiudi' : 'Aziende';
+  editBtn.title = 'Scegli a quali aziende è associato questo conto';
+  editBtn.style.cssText = 'flex:none; padding:4px 9px; font-size:12px; cursor:pointer;';
+  editBtn.addEventListener('click', ()=>{
+    coaCompanyEditOpen[acc.id] = !coaCompanyEditOpen[acc.id];
+    renderChartOfAccounts();
+  });
+  row.appendChild(editBtn);
+
   const delBtn = document.createElement('button');
   delBtn.className = 'del-riparti';
   delBtn.title = 'Elimina conto dal piano (verrà rimosso anche dalle aziende che lo usano)';
@@ -3562,7 +3651,42 @@ function renderCoaRow(acc, idx){
   });
   row.appendChild(delBtn);
 
-  return row;
+  if(!coaCompanyEditOpen[acc.id]) return row;
+
+  // pannello con una casella per ogni azienda (non modificabile se l'azienda usa già il conto)
+  const wrap = document.createElement('div');
+  wrap.appendChild(row);
+  const panel = document.createElement('div');
+  panel.style.cssText = 'display:flex; gap:14px; flex-wrap:wrap; padding:6px 12px 10px 12px; background:#fafbfc; border:1px solid var(--border); border-top:none; border-radius:0 0 8px 8px; font-size:13px;';
+  store.companies.forEach(c=>{
+    const lab = document.createElement('label');
+    lab.style.cssText = 'display:inline-flex; gap:5px; align-items:center; cursor:pointer;';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = accountInCompany(acc, c.id);
+    const usedByThis = companyUsedAccountIds(c).has(acc.id);
+    if(usedByThis){
+      cb.checked = true;
+      cb.disabled = true;
+      lab.title = 'Il conto è già usato nei dati di questa azienda: non si può togliere';
+    }
+    cb.addEventListener('change', ()=>{
+      if(!Array.isArray(store.chartOfAccounts[idx].companyIds)){
+        store.chartOfAccounts[idx].companyIds = store.companies.map(x=>x.id);
+      }
+      const list = store.chartOfAccounts[idx].companyIds;
+      const pos = list.indexOf(c.id);
+      if(cb.checked && pos === -1) list.push(c.id);
+      if(!cb.checked && pos !== -1) list.splice(pos, 1);
+      saveData();
+      render();
+    });
+    lab.appendChild(cb);
+    lab.appendChild(document.createTextNode(c.name + (usedByThis ? ' (in uso)' : '')));
+    panel.appendChild(lab);
+  });
+  wrap.appendChild(panel);
+  return wrap;
 }
 
 // Il piano dei conti è condiviso da tutte le aziende (vive in store.chartOfAccounts) e viene
@@ -3571,8 +3695,27 @@ function renderChartOfAccounts(){
   const list = document.getElementById('chartOfAccountsList');
   list.innerHTML = '';
 
+  // filtro "Mostra i conti di: <azienda>"
+  const filterSel = document.getElementById('coaCompanyFilter');
+  if(filterSel){
+    if(coaCompanyFilterId && !store.companies.some(c=> c.id === coaCompanyFilterId)) coaCompanyFilterId = '';
+    filterSel.innerHTML = '';
+    const oAll = document.createElement('option');
+    oAll.value = '';
+    oAll.textContent = 'Tutte le aziende';
+    filterSel.appendChild(oAll);
+    store.companies.forEach(c=>{
+      const o = document.createElement('option');
+      o.value = c.id;
+      o.textContent = c.name;
+      filterSel.appendChild(o);
+    });
+    filterSel.value = coaCompanyFilterId;
+  }
+  const passesCompany = (acc)=> !coaCompanyFilterId || accountInCompany(acc, coaCompanyFilterId);
+
   const q = searchState.piano;
-  const visibleCount = store.chartOfAccounts.filter(acc=> matchesSearch([acc.name], q)).length;
+  const visibleCount = store.chartOfAccounts.filter(acc=> passesCompany(acc) && matchesSearch([acc.name], q)).length;
 
   if(store.chartOfAccounts.length === 0){
     const empty = document.createElement('div');
@@ -3594,7 +3737,7 @@ function renderChartOfAccounts(){
       .map((acc, idx)=> ({ acc, idx }))
       .filter(({acc})=> acc.category === section.id);
 
-    const visibleInSection = accountsInSection.filter(({acc})=> matchesSearch([acc.name], q));
+    const visibleInSection = accountsInSection.filter(({acc})=> passesCompany(acc) && matchesSearch([acc.name], q));
     if(accountsInSection.length === 0) return; // sezionale senza conti: non lo mostriamo
     if(visibleInSection.length === 0) return; // nessun conto di questa sezione corrisponde alla ricerca
 
@@ -5521,7 +5664,7 @@ function buildPrevisionaleEntryRow(p, idx){
     labelConto.textContent = 'Conto';
     const selectConto = document.createElement('select');
     SECTIONS.filter(s=>s.kind==='accounts').forEach(sec=>{
-      const accs = accountsByCategory(sec.id);
+      const accs = accountsByCategoryForCompany(sec.id, p.accountId);
       if(accs.length === 0) return;
       const og = document.createElement('optgroup');
       og.label = sec.label;
@@ -5753,11 +5896,12 @@ function renderPrevisionalePivot(){
 }
 
 document.getElementById('addPrevisionaleBtn').addEventListener('click', ()=>{
-  if(store.chartOfAccounts.length === 0){
-    alert('Definisci prima almeno un conto nel Piano dei conti.');
+  const firstAcc = firstAccountForCurrentCompany();
+  if(!firstAcc){
+    alert('Nessun conto associato a questa azienda: associane almeno uno dal Piano dei conti.');
     return;
   }
-  data.previsionali.push({ id: makeId(), accountId: store.chartOfAccounts[0].id, descrizione:'', startMonth:0, endMonth:0, amount:0 });
+  data.previsionali.push({ id: makeId(), accountId: firstAcc.id, descrizione:'', startMonth:0, endMonth:0, amount:0 });
   saveData();
   render();
 });
@@ -5840,7 +5984,7 @@ function buildSpostamentoEntryRow(s, idx){
     labelConto.textContent = 'Conto';
     const selectConto = document.createElement('select');
     SECTIONS.filter(sec=>sec.kind==='accounts').forEach(sec=>{
-      const accs = accountsByCategory(sec.id);
+      const accs = accountsByCategoryForCompany(sec.id, s.accountId);
       if(accs.length === 0) return;
       const og = document.createElement('optgroup');
       og.label = sec.label;
@@ -6114,11 +6258,12 @@ function renderSpostamentiPivot(){
 }
 
 document.getElementById('addSpostamentoBtn').addEventListener('click', ()=>{
-  if(store.chartOfAccounts.length === 0){
-    alert('Definisci prima almeno un conto nel Piano dei conti.');
+  const firstAcc = firstAccountForCurrentCompany();
+  if(!firstAcc){
+    alert('Nessun conto associato a questa azienda: associane almeno uno dal Piano dei conti.');
     return;
   }
-  const accountId = store.chartOfAccounts[0].id;
+  const accountId = firstAcc.id;
   const fromMonth = 0;
   data.spostamenti.push({
     id: makeId(),
@@ -6140,12 +6285,16 @@ document.getElementById('addRipartitoBtn').addEventListener('click', ()=>{
 });
 
 document.getElementById('addAccountBtn').addEventListener('click', ()=>{
-  store.chartOfAccounts.push({ id: makeId(), name:'Nuovo conto', category:'ricavi', code: nextAccountCode() });
+  store.chartOfAccounts.push({ id: makeId(), name:'Nuovo conto', category:'ricavi', code: nextAccountCode(), companyIds: [data.id] });
   saveData();
   render();
 });
 
 // ---- Ricerca nelle schede Piano dei conti / Spese raggruppate / Previsionale / Spostamenti ----
+document.getElementById('coaCompanyFilter').addEventListener('change', (e)=>{
+  coaCompanyFilterId = e.target.value;
+  renderChartOfAccounts();
+});
 document.getElementById('searchPiano').addEventListener('input', (e)=>{
   searchState.piano = e.target.value;
   renderChartOfAccounts();
@@ -6248,7 +6397,9 @@ document.getElementById('deleteCompanyBtn').addEventListener('click', ()=>{
     return;
   }
   if(confirm('Vuoi davvero eliminare l\'azienda "' + data.name + '" e tutti i suoi dati? L\'operazione non è reversibile.')){
+    const deletedCompanyId = store.currentId;
     store.companies = store.companies.filter(c=> c.id !== store.currentId);
+    store.chartOfAccounts.forEach(a=>{ if(Array.isArray(a.companyIds)) a.companyIds = a.companyIds.filter(id=> id !== deletedCompanyId); });
     store.currentId = store.companies[0].id;
     saveData();
     renderCompanySelect();
@@ -7456,10 +7607,18 @@ document.getElementById('importBackupCompanyFile').addEventListener('change', (e
         store.companies.push(company);
       }
       store.currentId = company.id;
+      // i conti usati dall'azienda importata vengono associati ad essa
+      Object.keys(idMap).forEach(oldId=>{
+        const acc = store.chartOfAccounts.find(a=> a.id === idMap[oldId]);
+        if(!acc) return;
+        if(!Array.isArray(acc.companyIds)) acc.companyIds = [];
+        if(acc.companyIds.indexOf(company.id) === -1) acc.companyIds.push(company.id);
+      });
       store.companies.forEach(c=> normalizeCompany(c, store.chartOfAccounts));
       ensureAccountCodes(store.chartOfAccounts);
       ensureFornitoriAccounts(store.chartOfAccounts);
       ensureMonteOreAccounts(store.chartOfAccounts);
+      ensureAccountCompanies();
       saveData();
       data = getCurrentCompany();
       document.getElementById('yearField').value = data.year || '2026';
@@ -7506,6 +7665,7 @@ document.getElementById('importBackupFile').addEventListener('change', (e)=>{
       ensureAccountCodes(store.chartOfAccounts);
       ensureFornitoriAccounts(store.chartOfAccounts);
       ensureMonteOreAccounts(store.chartOfAccounts);
+      ensureAccountCompanies();
       saveData();
       data = getCurrentCompany();
       document.getElementById('yearField').value = data.year || '2026';
