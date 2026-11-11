@@ -862,6 +862,7 @@
     </div>
     <div id="chartOfAccountsList"></div>
     <button class="panel-add-btn" id="addAccountBtn">+ Aggiungi conto al piano</button>
+    <button class="panel-add-btn" id="mergeDuplicateAccountsBtn" title="Unisce i conti che hanno lo stesso nome e la stessa sezione">Unisci conti doppi</button>
   </div>
 
 </div>
@@ -3530,7 +3531,7 @@ function renderCoaRow(acc, idx){
   inputCode.type = 'text';
   inputCode.className = 'coa-code';
   inputCode.placeholder = 'Codice';
-  inputCode.title = 'Codice conto (univoco)';
+  inputCode.title = 'Codice conto (univoco): è lo stesso codice del conto in Odoo, usato per riconoscerlo nell\'importazione';
   inputCode.value = acc.code;
   inputCode.style.flex = 'none';
   inputCode.style.width = '70px';
@@ -3726,7 +3727,7 @@ function renderChartOfAccounts(){
   const passesCompany = (acc)=> !coaCompanyFilterId || accountInCompany(acc, coaCompanyFilterId);
 
   const q = searchState.piano;
-  const visibleCount = store.chartOfAccounts.filter(acc=> passesCompany(acc) && matchesSearch([acc.name], q)).length;
+  const visibleCount = store.chartOfAccounts.filter(acc=> passesCompany(acc) && matchesSearch([acc.name, acc.code || ""], q)).length;
 
   if(store.chartOfAccounts.length === 0){
     const empty = document.createElement('div');
@@ -3748,7 +3749,7 @@ function renderChartOfAccounts(){
       .map((acc, idx)=> ({ acc, idx }))
       .filter(({acc})=> acc.category === section.id);
 
-    const visibleInSection = accountsInSection.filter(({acc})=> passesCompany(acc) && matchesSearch([acc.name], q));
+    const visibleInSection = accountsInSection.filter(({acc})=> passesCompany(acc) && matchesSearch([acc.name, acc.code || ""], q));
     if(accountsInSection.length === 0) return; // sezionale senza conti: non lo mostriamo
     if(visibleInSection.length === 0) return; // nessun conto di questa sezione corrisponde alla ricerca
 
@@ -6310,6 +6311,54 @@ document.getElementById('addAccountBtn').addEventListener('click', ()=>{
   render();
 });
 
+// Unisce i conti con lo stesso nome nella stessa sezione: ne tiene uno, sposta su di lui i dati di
+// tutte le aziende, unisce le aziende associate ed elimina i doppioni.
+document.getElementById('mergeDuplicateAccountsBtn').addEventListener('click', ()=>{
+  // Doppioni = stesso codice (Odoo) oppure stessa descrizione (nella stessa sezione)
+  const parent = {};
+  const find = x=> parent[x]===x ? x : (parent[x]=find(parent[x]));
+  store.chartOfAccounts.forEach(a=>{ parent[a.id] = a.id; });
+  const seen = {};
+  store.chartOfAccounts.forEach(a=>{
+    const keys = ['n|' + a.category + '|' + normalizeAccountName(a.name)];
+    if(String(a.code||'').trim()) keys.push('c|' + a.category + '|' + String(a.code).trim());
+    keys.forEach(k=>{
+      if(seen[k]) parent[find(a.id)] = find(seen[k]); else seen[k] = a.id;
+    });
+  });
+  const byRoot = {};
+  store.chartOfAccounts.forEach(a=>{ (byRoot[find(a.id)] = byRoot[find(a.id)] || []).push(a); });
+  const dups = Object.values(byRoot).filter(g=> g.length > 1).map(g=>{
+    return g;
+  });
+  if(dups.length === 0){ alert('Non ci sono conti doppi: nessuna modifica.'); return; }
+  const righe = dups.map(g=> '• ' + g[0].name.trim() + ' [' + (g[0].code||'') + ']' + ' (' + g.length + ' conti)').join('\n');
+  if(!confirm('Trovati ' + dups.length + ' conti doppi:\n\n' + righe + '\n\nLi unisco in uno solo? I dati di tutte le aziende vengono spostati sul conto mantenuto. Consiglio di fare prima un backup.')) return;
+  const remap = {};
+  dups.forEach(g=>{
+    const keep = g[0];
+    g.slice(1).forEach(d=>{
+      remap[d.id] = keep.id;
+      if(!Array.isArray(d.companyIds) || !Array.isArray(keep.companyIds)){
+        delete keep.companyIds; // uno dei due valeva per tutte le aziende
+      } else {
+        d.companyIds.forEach(cid=>{ if(keep.companyIds.indexOf(cid) === -1) keep.companyIds.push(cid); });
+      }
+    });
+  });
+  store.companies = store.companies.map(c=>{
+    let json = JSON.stringify(c);
+    Object.keys(remap).forEach(oldId=>{ json = json.split('"' + oldId + '"').join('"' + remap[oldId] + '"'); });
+    return JSON.parse(json);
+  });
+  store.chartOfAccounts = store.chartOfAccounts.filter(a=> !remap[a.id]);
+  data = getCurrentCompany();
+  ensureAccountCompanies();
+  saveData();
+  render();
+  alert('Fatto: ' + Object.keys(remap).length + ' conti doppi uniti.');
+});
+
 // ---- Ricerca nelle schede Piano dei conti / Spese raggruppate / Previsionale / Spostamenti ----
 document.getElementById('coaCompanyFilter').addEventListener('change', (e)=>{
   coaCompanyFilterId = e.target.value;
@@ -7597,7 +7646,8 @@ document.getElementById('importBackupCompanyFile').addEventListener('change', (e
         const sameId = store.chartOfAccounts.find(a=> a.id === acc.id);
         if(sameId){ idMap[acc.id] = sameId.id; return; }
         const key = String(acc.name||'').trim().toLowerCase();
-        const sameName = store.chartOfAccounts.find(a=> a.category === acc.category && String(a.name||'').trim().toLowerCase() === key);
+        const sameName = (acc.code && store.chartOfAccounts.find(a=> a.category === acc.category && String(a.code||'').trim() === String(acc.code).trim()))
+          || store.chartOfAccounts.find(a=> a.category === acc.category && String(a.name||'').trim().toLowerCase() === key);
         if(sameName){ idMap[acc.id] = sameName.id; return; }
         const created = { id: acc.id, name: acc.name, category: acc.category, code: acc.code };
         store.chartOfAccounts.push(created);
@@ -7784,7 +7834,7 @@ document.getElementById('importFile').addEventListener('change', (e)=>{
       // esiste già nella sezione corretta), poi sostituisce le righe con riferimenti { accountId, values }.
       SECTION_IDS.forEach(sectionId=>{
         newData[sectionId] = newData[sectionId].map(row=>{
-          let acc = store.chartOfAccounts.find(a=> a.category === sectionId && a.name === row.name);
+          let acc = store.chartOfAccounts.find(a=> a.category === sectionId && normalizeAccountName(a.name) === normalizeAccountName(row.name));
           if(!acc){
             acc = { id: makeId(), name: row.name, category: sectionId, code: nextAccountCode() };
             store.chartOfAccounts.push(acc);
@@ -8080,10 +8130,31 @@ document.getElementById('odooLoadBtn').addEventListener('click', async ()=>{
 
 // Trova (o crea) nel piano dei conti condiviso il conto per una sezione + nome dati, e ne
 // restituisce l'oggetto (usato sia per la riga diretta che per le "Spese raggruppate").
+function normalizeAccountName(name){
+  return String(name||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim().toLowerCase();
+}
+// Cerca nel piano dei conti condiviso un conto con lo stesso nome (senza badare a maiuscole,
+// accenti e spazi doppi): prima nella sezione richiesta, poi in qualsiasi altra sezione.
+function findSharedAccount(sectionId, name){
+  const key = normalizeAccountName(name);
+  return store.chartOfAccounts.find(a=> a.category === sectionId && normalizeAccountName(a.name) === key)
+      || store.chartOfAccounts.find(a=> normalizeAccountName(a.name) === key);
+}
+// Il codice del piano dei conti coincide con quello di Odoo: si cerca prima per codice, poi per descrizione.
+function findAccountByOdooCodeOrName(sectionId, name, odooCode){
+  const oc = String(odooCode||'').trim();
+  if(oc){
+    const byCode = store.chartOfAccounts.filter(a=> String(a.code||'').trim() === oc);
+    if(byCode.length) return byCode.find(a=> a.category === sectionId) || byCode[0];
+  }
+  return findSharedAccount(sectionId, name);
+}
 function odooResolveAccount(sectionId, name, code){
-  let acc = store.chartOfAccounts.find(a=> a.category === sectionId && a.name === name);
+  let acc = findAccountByOdooCodeOrName(sectionId, name, code);
   if(!acc){
-    acc = { id: makeId(), name, category: sectionId, code: nextAccountCode() };
+    const oc = String(code||'').trim();
+    const codeFree = oc && !store.chartOfAccounts.some(a=> String(a.code||'').trim() === oc);
+    acc = { id: makeId(), name, category: sectionId, code: codeFree ? oc : nextAccountCode() };
     store.chartOfAccounts.push(acc);
   }
   return acc;
@@ -8158,9 +8229,11 @@ document.getElementById('odooImportConfirmBtn').addEventListener('click', ()=>{
     const sectionId = odooRowSelections[acc.account_id];
     if(!sectionId || sectionId === 'ignora') return;
     const accObj = odooResolveAccount(sectionId, acc.name, acc.code);
-    odooSetRowValues(sectionId, accObj, acc.months, odooLoadedRange);
+    // se il conto esisteva già in un'altra sezione, si usa quella (niente doppioni)
+    const effSection = accObj.category;
+    odooSetRowValues(effSection, accObj, acc.months, odooLoadedRange);
     if(acc.code){
-      store.odooImportRules[acc.code] = { section: sectionId };
+      store.odooImportRules[acc.code] = { section: effSection };
     }
     imported++;
   });
