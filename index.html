@@ -1719,6 +1719,17 @@ const previsionaleDescCollapsed = {};
 // una ricerca attiva). Chiave: nome dipendente normalizzato.
 const fornitoriDipendenteCollapsed = {};
 const spostamentiAccountCollapsed = {};
+// Porta in vista (e evidenzia un attimo) la riga appena aggiunta in Previsionale/Spostamenti.
+function revealNewEntry(entryId){
+  setTimeout(()=>{
+    const el = document.querySelector('[data-entry-id="'+entryId+'"]');
+    if(!el) return;
+    el.scrollIntoView({ block:'center', behavior:'smooth' });
+    el.style.transition = 'background-color 1.5s';
+    el.style.backgroundColor = '#fff3b0';
+    setTimeout(()=>{ el.style.backgroundColor = ''; }, 1800);
+  }, 50);
+}
 
 function matchesSearch(fields, query){
   if(!query) return true;
@@ -5655,6 +5666,7 @@ function appendPrevisionaleEntriesByDescrizione(list, accountKey, entries, activ
 function buildPrevisionaleEntryRow(p, idx){
     const row = document.createElement('div');
     row.className = 'riparti-item';
+    row.dataset.entryId = p.id;
 
     // conto (raggruppato per sezione)
     const fieldConto = document.createElement('div');
@@ -5901,9 +5913,13 @@ document.getElementById('addPrevisionaleBtn').addEventListener('click', ()=>{
     alert('Nessun conto associato a questa azienda: associane almeno uno dal Piano dei conti.');
     return;
   }
-  data.previsionali.push({ id: makeId(), accountId: firstAcc.id, descrizione:'', startMonth:0, endMonth:0, amount:0 });
+  const newId = makeId();
+  data.previsionali.push({ id: newId, accountId: firstAcc.id, descrizione:'', startMonth:0, endMonth:0, amount:0 });
+  previsionaleAccountCollapsed[firstAcc.id] = false; // apre il gruppo così la nuova riga si vede subito
+  previsionaleDescCollapsed[firstAcc.id + '::__no_desc__'] = false;
   saveData();
   render();
+  revealNewEntry(newId);
 });
 
 // ---- Spostamenti: sposta un importo già inserito da un mese a un altro, per lo stesso conto ----
@@ -5975,6 +5991,7 @@ function renderSpostamentiList(){
 function buildSpostamentoEntryRow(s, idx){
     const row = document.createElement('div');
     row.className = 'riparti-item';
+    row.dataset.entryId = s.id;
 
     // conto (raggruppato per sezione)
     const fieldConto = document.createElement('div');
@@ -6265,8 +6282,9 @@ document.getElementById('addSpostamentoBtn').addEventListener('click', ()=>{
   }
   const accountId = firstAcc.id;
   const fromMonth = 0;
+  const newSpId = makeId();
   data.spostamenti.push({
-    id: makeId(),
+    id: newSpId,
     accountId,
     tipo: 'singolo',
     fromMonth,
@@ -6274,8 +6292,10 @@ document.getElementById('addSpostamentoBtn').addEventListener('click', ()=>{
     numMonths: 1,
     amount: currentManualValueForAccount(accountId, fromMonth)
   });
+  spostamentiAccountCollapsed[accountId] = false; // apre il gruppo così la nuova riga si vede subito
   saveData();
   render();
+  revealNewEntry(newSpId);
 });
 
 document.getElementById('addRipartitoBtn').addEventListener('click', ()=>{
